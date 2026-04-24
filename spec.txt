@@ -1,0 +1,5 @@
+Nim GPLv3 public
+luigi
+luiginim
+SDL2
+SDL2_TTF
