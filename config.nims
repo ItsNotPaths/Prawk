@@ -1,4 +1,6 @@
-switch("path", "vendor/luiginim/src")
+exec "bash scripts/prep-vendor.sh"
+
+switch("path", "build/luiginim/src")
 switch("mm", "arc")
 switch("panics", "on")
 switch("define", "lFreetype")

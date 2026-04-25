@@ -41,6 +41,7 @@ type Terminal* = object
   readBuf: array[4096, char]
 
 var allTerminals*: seq[ptr Terminal]
+var theTermBottom*: ptr Terminal
 
 const fgPalette: array[9, uint32] = [
   0x32302f'u32, 0xea6962'u32, 0xa9b665'u32, 0xd8a657'u32,
@@ -126,10 +127,7 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
     let k = cast[ptr KeyTyped](dp)
     if t.ptyFd < 0: return 0
     let w = element.window
-    stderr.writeLine("[prawk] TERM key code=" & $k.code & " ctrl=" & $w.ctrl &
-                     " alt=" & $w.alt & " self=" & $cast[uint](element))
-    stderr.flushFile()
-    # Let Alt+... bubble up so the window can do pane navigation.
+    # Let Alt+... bubble up so the window can do pane navigation / shortcuts.
     if w != nil and w.alt: return 0
     var seqStr: string = ""
     let code = k.code
@@ -173,6 +171,11 @@ proc terminalCreate*(parent: ptr Element, flags: uint32 = 0): ptr Terminal =
   t.pid = pid
   allTerminals.add(t)
   return t
+
+proc writeText*(t: ptr Terminal, s: string) =
+  if t == nil or t.vt == nil or s.len == 0: return
+  tmt_write(t.vt, s.cstring, csize_t(s.len))
+  elementRepaint(addr t.e, nil)
 
 proc drainAll*() =
   for t in allTerminals:

@@ -13,6 +13,8 @@ type
     e*: Element
     buf: EditorBuf
 
+var theEditor*: ptr Editor
+
 proc glyphDims(): (cint, cint) =
   if ui.activeFont != nil:
     (ui.activeFont.glyphWidth, ui.activeFont.glyphHeight)
@@ -111,7 +113,7 @@ proc killToEnd(ed: ptr Editor) =
     ed.buf.lines[row] = line.substr(0, col - 1)
     ed.buf.dirty = true
 
-proc saveCurrent(ed: ptr Editor) =
+proc saveCurrent*(ed: ptr Editor) =
   if ed.buf.path.len == 0: return
   let content = ed.buf.lines.join("\n")
   if saveAtomic(ed.buf.path, content):
@@ -249,4 +251,5 @@ proc editorCreate*(parent: ptr Element, flags: uint32 = 0): ptr Editor =
                         editorMessage, "Editor")
   let ed = cast[ptr Editor](e)
   ed.buf.lines = @[""]
+  theEditor = ed
   return ed

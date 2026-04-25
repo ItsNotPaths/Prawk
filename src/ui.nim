@@ -1,6 +1,6 @@
 import luigi
 import term, pump, editor, menubar, tree
-export luigi, editor
+export luigi, editor, menubar
 
 var
   leftCol, rightCol: ptr Element         # tree, editor
@@ -17,23 +17,29 @@ proc columnOf(e: ptr Element): int =
   elif e == rightCol: 2
   else: -1
 
+proc focusElement(target: ptr Element) =
+  if target == nil: return
+  let win = target.window
+  let prev = if win != nil: win.focused else: nil
+  elementFocus(target)
+  if prev != nil and prev != target:
+    elementRepaint(prev, nil)
+  elementRepaint(target, nil)
+
 proc focusCol(col: int) =
   case col
-  of 0: elementFocus(leftCol)
-  of 1: elementFocus(if lastMiddle != nil: lastMiddle else: middleTop)
-  of 2: elementFocus(rightCol)
+  of 0: focusElement(leftCol)
+  of 1: focusElement(if lastMiddle != nil: lastMiddle else: middleTop)
+  of 2: focusElement(rightCol)
   else: discard
 
 proc onWinMsg(element: ptr Element, message: Message, di: cint, dp: pointer): cint {.cdecl.} =
   if message == msgKeyTyped:
     let k = cast[ptr KeyTyped](dp)
     let w = element.window
-    let code = k.code
-    log("WIN key code=" & $code & " ctrl=" & $w.ctrl & " shift=" & $w.shift &
-        " alt=" & $w.alt & " focusedCol=" & $columnOf(w.focused))
-
     if not w.alt: return 0
 
+    let code = k.code
     let left  = code == int(KEYCODE_LETTER('H')) or code == int(KEYCODE_LEFT)
     let right = code == int(KEYCODE_LETTER('L')) or code == int(KEYCODE_RIGHT)
     let up    = code == int(KEYCODE_LETTER('K')) or code == int(KEYCODE_UP)
@@ -43,7 +49,7 @@ proc onWinMsg(element: ptr Element, message: Message, di: cint, dp: pointer): ci
     let cur = element.window.focused
     let col = columnOf(cur)
     if col == 1 and cur != nil:
-      lastMiddle = cur  # remember before leaving
+      lastMiddle = cur
 
     if left:
       if col == 2: focusCol(1)
@@ -52,10 +58,9 @@ proc onWinMsg(element: ptr Element, message: Message, di: cint, dp: pointer): ci
       if col == 0: focusCol(1)
       elif col == 1: focusCol(2)
     elif down:
-      if col == 1 and cur == middleTop: elementFocus(middleBottom)
+      if col == 1 and cur == middleTop: focusElement(middleBottom)
     elif up:
-      if col == 1 and cur == middleBottom: elementFocus(middleTop)
-    log("  -> focus col=" & $columnOf(element.window.focused))
+      if col == 1 and cur == middleBottom: focusElement(middleTop)
     return 1
   return 0
 
@@ -95,6 +100,7 @@ proc buildUi*(): UiRefs =
   result.termSplit = splitPaneCreate(addr result.mainSplit.e, SPLIT_PANE_VERTICAL, 0.9)
   result.termTop    = terminalCreate(addr result.termSplit.e)
   result.termBottom = terminalCreate(addr result.termSplit.e)
+  term.theTermBottom = result.termBottom
 
   result.editor = editorCreate(addr result.mainSplit.e)
 
@@ -107,5 +113,19 @@ proc buildUi*(): UiRefs =
   result.window.e.messageUser = onWinMsg
   log("ui built: tree=" & $cast[uint](leftCol) & " termT=" & $cast[uint](middleTop) &
       " termB=" & $cast[uint](middleBottom) & " editor=" & $cast[uint](rightCol))
+
+  let mbCp = cast[pointer](result.menubar)
+  windowRegisterShortcut(result.window, Shortcut(
+    code: cint(KEYCODE_LETTER('D')), alt: true,
+    invoke: paletteOpenCb, cp: mbCp))
+  windowRegisterShortcut(result.window, Shortcut(
+    code: cint(KEYCODE_LETTER('F')), alt: true,
+    invoke: openFileMenuCb, cp: mbCp))
+  windowRegisterShortcut(result.window, Shortcut(
+    code: cint(KEYCODE_LETTER('E')), alt: true,
+    invoke: openEditMenuCb, cp: mbCp))
+  windowRegisterShortcut(result.window, Shortcut(
+    code: cint(KEYCODE_LETTER('V')), alt: true,
+    invoke: openViewMenuCb, cp: mbCp))
 
   startPump(result.window)
