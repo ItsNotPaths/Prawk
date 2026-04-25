@@ -44,15 +44,27 @@ else
     echo "  done."
 fi
 
-echo "==> sdl2"
-fetch "sdl2" \
-    "https://github.com/libsdl-org/SDL/releases/download/release-2.30.11/SDL2-2.30.11.tar.gz" \
-    "$VENDOR/sdl2"
+echo "==> freetype headers (for luigi.c)"
+FT_HEADERS="$VENDOR/luiginim/src/luigi/source/freetype"
+if [ -d "$FT_HEADERS" ] && [ -f "$FT_HEADERS/ft2build.h" ]; then
+    echo "  already present: freetype headers"
+else
+    TMP=$(mktemp -d)
+    git clone --depth=1 -q "https://gitlab.freedesktop.org/freetype/freetype.git" "$TMP/freetype"
+    mkdir -p "$FT_HEADERS"
+    cp -r "$TMP/freetype/include/." "$FT_HEADERS/"
+    rm -rf "$TMP"
+    echo "  done."
+fi
 
-echo "==> sdl2_ttf"
-fetch "sdl2_ttf" \
-    "https://github.com/libsdl-org/SDL_ttf/releases/download/release-2.24.0/SDL2_ttf-2.24.0.tar.gz" \
-    "$VENDOR/sdl2_ttf"
+echo "==> libtmt"
+if [ -d "$VENDOR/libtmt" ] && [ -n "$(ls -A "$VENDOR/libtmt" 2>/dev/null)" ]; then
+    echo "  already present: libtmt"
+else
+    echo "  cloning libtmt..."
+    git clone --depth=1 "https://github.com/deadpixi/libtmt.git" "$VENDOR/libtmt"
+    echo "  done."
+fi
 
 echo ""
 echo "All deps ready."

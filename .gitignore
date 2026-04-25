@@ -1,1 +1,5 @@
 vendor/
+nimcache/
+/prawk
+*.o
+ROADMAP.md

@@ -39,23 +39,36 @@ jobs:
           chmod +x ./download-deps.sh
           ./download-deps.sh
 
-      # TODO: install toolchain for this project's language
       - name: Install toolchain
-        run: |
-          echo 'TODO add toolchain install step' >&2
-          exit 1
+        uses: jiro4989/setup-nim-action@v1
+        with:
+          nim-version: '2.0.x'
+
+      - name: Install X11 + freetype headers
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libfreetype-dev fontconfig
+
+      - name: Install freetype Nim package
+        run: nimble install -y freetype@0.1.2
 
       - name: Build
         run: |
-          # TODO: add linux build command
-          false
+          nim c --opt:size -d:release -d:strip -d:lto \
+                --out:"$PROJECT_NAME" src/prawk.nim
+          strip --strip-all "$PROJECT_NAME" || true
+
+      - name: Size guard (<=500KB)
+        run: |
+          BYTES=$(stat -c%s "$PROJECT_NAME")
+          echo "binary size: ${BYTES}"
+          if [ "$BYTES" -gt 512000 ]; then
+            echo "binary exceeds 500KB budget (${BYTES} > 512000)" >&2
+            exit 1
+          fi
 
       - name: Stage artifacts
         run: |
           mkdir -p dist
-          # TODO: copy the files you want in the linux release into dist/
-          [ -f "$PROJECT_NAME" ] && cp "$PROJECT_NAME" dist/ || true
-          [ -d dist-stage ] && cp -r dist-stage/. dist/ || true
+          cp "$PROJECT_NAME" dist/
           [ -f README.md ] && cp README.md dist/ || true
           [ -f LICENSE ] && cp LICENSE dist/ || true
 
@@ -80,25 +93,11 @@ jobs:
           chmod +x ./download-deps.sh
           ./download-deps.sh
 
-      # TODO: install cross-compile toolchain for this project's language
-      - name: Install toolchain
+      - name: Stub (Windows support lands in Pass 4)
         run: |
-          echo 'TODO add cross-compile toolchain install step' >&2
-          exit 1
-
-      - name: Build
-        run: |
-          # TODO: add windows build command
-          false
-
-      - name: Stage artifacts
-        run: |
+          echo "Windows build lands in Pass 4 (ConPTY). Emitting placeholder dist/."
           mkdir -p dist
-          # TODO: copy the files you want in the windows release into dist/
-          [ -f "${PROJECT_NAME}.exe" ] && cp "${PROJECT_NAME}.exe" dist/ || true
-          [ -d dist-stage ] && cp -r dist-stage/. dist/ || true
-          [ -f README.md ] && cp README.md dist/ || true
-          [ -f LICENSE ] && cp LICENSE dist/ || true
+          echo "Windows build not yet available for this tag." > dist/README.md
 
       - uses: actions/upload-artifact@v4
         with:

@@ -39,13 +39,18 @@ fi
 
 if [ $DO_LOCAL -eq 1 ]; then
     echo "==> Local build: $PROJECT_NAME -> $RELEASE_DIR"
-    rm -rf "$RELEASE_DIR"
     mkdir -p "$RELEASE_DIR"
-echo "# TODO: add build step for this project's language" >&2
-exit 1
-    [ -f "$PROJECT_DIR/README.md" ] && cp "$PROJECT_DIR/README.md" "$RELEASE_DIR/" || true
-    [ -f "$PROJECT_DIR/LICENSE" ]   && cp "$PROJECT_DIR/LICENSE"   "$RELEASE_DIR/" || true
-    echo "==> Local done: $RELEASE_DIR"
+
+    BIN="$RELEASE_DIR/$PROJECT_NAME"
+    ( cd "$PROJECT_DIR" && \
+      nim c --opt:size -d:release -d:strip -d:lto \
+            --out:"$BIN" src/prawk.nim )
+
+    [ -f "$PROJECT_DIR/README.md" ] && cp -f "$PROJECT_DIR/README.md" "$RELEASE_DIR/" || true
+    [ -f "$PROJECT_DIR/LICENSE" ]   && cp -f "$PROJECT_DIR/LICENSE"   "$RELEASE_DIR/" || true
+
+    SIZE=$(du -h "$BIN" | cut -f1)
+    echo "==> Local done: $BIN (${SIZE})"
 fi
 
 if [ $DO_PUBLIC -eq 1 ]; then
