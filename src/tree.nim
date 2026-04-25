@@ -135,7 +135,7 @@ proc treeMessage(element: ptr Element, message: Message, di: cint, dp: pointer):
       var txt = rowText(n)
       if idx == tr.pendingLoadIdx:
         txt.add("  [press Shift+Enter again to load as project]")
-      drawString(painter, rowRect, txt.cstring, cast[pointer](txt.len),
+      drawString(painter, rowRect, txt.cstring, txt.len,
                  textColor, cint(ALIGN_LEFT), nil)
     if element.window != nil and element.window.focused == element:
       drawBorder(painter, element.bounds, 0x9253be'u32,

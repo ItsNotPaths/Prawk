@@ -116,16 +116,16 @@ proc buildUi*(): UiRefs =
 
   let mbCp = cast[pointer](result.menubar)
   windowRegisterShortcut(result.window, Shortcut(
-    code: cint(KEYCODE_LETTER('D')), alt: true,
+    code: int(KEYCODE_LETTER('D')), alt: true,
     invoke: paletteOpenCb, cp: mbCp))
   windowRegisterShortcut(result.window, Shortcut(
-    code: cint(KEYCODE_LETTER('F')), alt: true,
+    code: int(KEYCODE_LETTER('F')), alt: true,
     invoke: openFileMenuCb, cp: mbCp))
   windowRegisterShortcut(result.window, Shortcut(
-    code: cint(KEYCODE_LETTER('E')), alt: true,
+    code: int(KEYCODE_LETTER('E')), alt: true,
     invoke: openEditMenuCb, cp: mbCp))
   windowRegisterShortcut(result.window, Shortcut(
-    code: cint(KEYCODE_LETTER('V')), alt: true,
+    code: int(KEYCODE_LETTER('V')), alt: true,
     invoke: openViewMenuCb, cp: mbCp))
 
   startPump(result.window)

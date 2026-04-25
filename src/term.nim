@@ -100,7 +100,7 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
         buf[0] = char(ch)
         drawString(painter,
           Rectangle(l: x, r: x + gW, t: y, b: y + gH),
-          cast[cstring](addr buf[0]), cast[pointer](1),
+          cast[cstring](addr buf[0]), 1,
           fg, cint(ALIGN_LEFT), nil)
     if element.window != nil and element.window.focused == element:
       let b = t.e.bounds

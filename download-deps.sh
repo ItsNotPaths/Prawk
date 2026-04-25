@@ -27,7 +27,7 @@ fetch() {
 }
 
 echo "==> luigi"
-if [ -d "$VENDOR/luigi" ] && [ -n "$(ls -A "$VENDOR/luigi" 2>/dev/null)" ]; then
+if [ -d "$VENDOR/luigi" ] && [ -f "$VENDOR/luigi/luigi.h" ]; then
     echo "  already present: luigi"
 else
     echo "  cloning luigi..."
@@ -35,17 +35,8 @@ else
     echo "  done."
 fi
 
-echo "==> luiginim"
-if [ -d "$VENDOR/luiginim" ] && [ -n "$(ls -A "$VENDOR/luiginim" 2>/dev/null)" ]; then
-    echo "  already present: luiginim"
-else
-    echo "  cloning luiginim..."
-    git clone --depth=1 "https://github.com/neroist/luigi.git" "$VENDOR/luiginim"
-    echo "  done."
-fi
-
-echo "==> freetype headers (for luigi.c)"
-FT_HEADERS="$VENDOR/luiginim/src/luigi/source/freetype"
+echo "==> freetype headers (for luigi.h freetype path)"
+FT_HEADERS="$VENDOR/luigi/freetype"
 if [ -d "$FT_HEADERS" ] && [ -f "$FT_HEADERS/ft2build.h" ]; then
     echo "  already present: freetype headers"
 else

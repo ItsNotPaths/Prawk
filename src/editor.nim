@@ -136,7 +136,7 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
       let line = ed.buf.lines[rowIdx]
       if line.len > 0:
         discard drawStringHighlighted(painter, rowRect, line.cstring,
-                                      cast[pointer](line.len), 4.cint)
+                                      line.len, 4.cint)
     # cursor
     let cRowOnScreen = ed.buf.cursorRow - ed.buf.topLine
     if cRowOnScreen >= 0 and cRowOnScreen < vr:

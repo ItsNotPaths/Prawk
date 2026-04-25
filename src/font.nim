@@ -18,9 +18,8 @@ proc systemMonoPath(): string =
   return ""
 
 proc loadFont*(size: uint32 = defaultSize) =
-  when defined(lFreetype):
-    let path = systemMonoPath()
-    if path.len == 0: return
-    let f = fontCreate(path.cstring, size)
-    if f != nil:
-      fontActivate(f)
+  let path = systemMonoPath()
+  if path.len == 0: return
+  let f = fontCreate(path.cstring, size)
+  if f != nil:
+    discard fontActivate(f)

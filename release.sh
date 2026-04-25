@@ -41,8 +41,6 @@ if [ $DO_LOCAL -eq 1 ]; then
     echo "==> Local build: $PROJECT_NAME -> $RELEASE_DIR"
     mkdir -p "$RELEASE_DIR"
 
-    bash "$PROJECT_DIR/scripts/prep-vendor.sh"
-
     BIN="$RELEASE_DIR/$PROJECT_NAME"
     ( cd "$PROJECT_DIR" && \
       nim c --opt:size -d:release -d:strip -d:lto \

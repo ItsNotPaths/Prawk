@@ -1,11 +1,6 @@
 import std/strutils
 import luigi, commands
 
-when defined(linux):
-  {.compile: "prawk_x11.c".}
-  {.passL: "-lX11".}
-  proc prawk_x_focus_menu(w: ptr Window) {.importc, cdecl.}
-
 type
   MenuOption = object
     label: cstring
@@ -24,6 +19,7 @@ type
     prevFocus: ptr Element
     palette*: bool
     palBuf: string
+    menuOpen: bool
 
 proc menusClose(): bool {.cdecl, importc: "_UIMenusClose".}
 
@@ -46,20 +42,23 @@ proc runOption(cp: pointer) {.cdecl.} =
 proc firstChild(e: ptr Element): ptr Element =
   cast[ptr Element](e.children)
 
-proc nextSibling(e: ptr Element): ptr Element = e.next
+proc isButton(e: ptr Element): bool =
+  e != nil and e.cClassName != nil and $e.cClassName == "Button"
 
-proc lastSibling(first: ptr Element): ptr Element =
-  var cur = first
-  while cur != nil and cur.next != nil: cur = cur.next
+proc nextButton(e: ptr Element): ptr Element =
+  var cur = e.next
+  while cur != nil and not isButton(cur): cur = cur.next
   cur
 
-proc prevSibling(first: ptr Element, target: ptr Element): ptr Element =
+proc prevButton(first: ptr Element, target: ptr Element): ptr Element =
+  # Walk from `first` toward `target`, remembering the most recent Button.
+  # Skips non-Button siblings (luigi's menu has a ScrollBar before any button).
   var cur = first
-  var prev: ptr Element = nil
+  var lastBtn: ptr Element = nil
   while cur != nil and cur != target:
-    prev = cur
+    if isButton(cur): lastBtn = cur
     cur = cur.next
-  prev
+  lastBtn
 
 proc menuButtonMessage(element: ptr Element, message: Message, di: cint, dp: pointer): cint {.cdecl.} =
   if message == msgKeyTyped:
@@ -67,13 +66,11 @@ proc menuButtonMessage(element: ptr Element, message: Message, di: cint, dp: poi
     let code = k.code
     let first = firstChild(element.parent)
     if code == int(KEYCODE_DOWN) or code == int(KEYCODE_LETTER('J')):
-      var nxt = nextSibling(element)
-      if nxt == nil: nxt = first
+      let nxt = nextButton(element)
       if nxt != nil: elementFocus(nxt)
       return 1
     if code == int(KEYCODE_UP) or code == int(KEYCODE_LETTER('K')):
-      var prv = prevSibling(first, element)
-      if prv == nil: prv = lastSibling(first)
+      let prv = prevButton(first, element)
       if prv != nil: elementFocus(prv)
       return 1
     if code == int(KEYCODE_ENTER):
@@ -88,16 +85,35 @@ proc menuButtonMessage(element: ptr Element, message: Message, di: cint, dp: poi
     return 0
   return 0
 
+proc findPopupMenuWin(): ptr Window =
+  var w = cast[ptr Window](ui.windows)
+  while w != nil:
+    if (w.e.flags and WINDOW_MENU) != 0: return w
+    w = w.next
+  return nil
+
+proc restoreFocusAfterMenu(mb: ptr Menubar) =
+  mb.menuOpen = false
+  let prev = mb.prevFocus
+  mb.prevFocus = nil
+  if prev != nil and mb.e.window != nil:
+    elementFocus(prev)
+    elementRepaint(prev, nil)
+
 proc spawnMenu(mb: ptr Menubar, idx: int) =
   if idx < 0 or idx >= mb.items.len: return
   if mb.items[idx].options.len == 0: return
+  # Override-redirect popups don't take X11 keyboard focus on tiling WMs,
+  # so keep the main window focused and route keys through the menubar.
+  if not mb.menuOpen and mb.e.window != nil:
+    mb.prevFocus = mb.e.window.focused
+  mb.menuOpen = true
   let m = menuCreate(addr mb.e, 0)
   for i in 0 ..< mb.items[idx].options.len:
     let optPtr = addr mb.items[idx].options[i]
     menuAddItem(m, 0, mb.items[idx].options[i].label,
                 invoke = runOption, cp = cast[pointer](optPtr))
   menuShow(m)
-  # override each button's messageUser for keyboard nav, then focus first
   var child = firstChild(addr m.e)
   var firstButton: ptr Element = nil
   while child != nil:
@@ -107,11 +123,7 @@ proc spawnMenu(mb: ptr Menubar, idx: int) =
     child = child.next
   if firstButton != nil:
     elementFocus(firstButton)
-  when defined(linux):
-    # luigi doesn't transfer X11 keyboard focus to the menu popup, so keys
-    # still go to the main window. nudge focus via a tiny C helper.
-    if m.e.window != nil:
-      prawk_x_focus_menu(m.e.window)
+  elementFocus(addr mb.e)
 
 proc openFileMenuCb*(cp: pointer) {.cdecl.} =
   if cp != nil: spawnMenu(cast[ptr Menubar](cp), 0)
@@ -171,9 +183,9 @@ proc menubarMessage(element: ptr Element, message: Message, di: cint, dp: pointe
       let promptRect = Rectangle(
         l: element.bounds.l + padX, r: element.bounds.r,
         t: element.bounds.t, b: element.bounds.b)
-      drawString(painter, promptRect, txt.cstring, cast[pointer](txt.len),
+      drawString(painter, promptRect, txt.cstring, txt.len,
                  ui.theme.text, cint(ALIGN_LEFT), nil)
-      let textW = measureStringWidth(txt.cstring, cast[pointer](txt.len))
+      let textW = measureStringWidth(txt.cstring, txt.len)
       let gW = if ui.activeFont != nil: ui.activeFont.glyphWidth else: 9.cint
       let cx = element.bounds.l + padX + textW
       drawInvert(painter, Rectangle(
@@ -196,6 +208,18 @@ proc menubarMessage(element: ptr Element, message: Message, di: cint, dp: pointe
     return 1
 
   elif message == msgKeyTyped:
+    if mb.menuOpen:
+      let popup = findPopupMenuWin()
+      if popup == nil:
+        restoreFocusAfterMenu(mb)
+        return 0
+      let target = popup.focused
+      var rc: cint = 0
+      if target != nil:
+        rc = elementMessage(target, msgKeyTyped, di, dp)
+      if findPopupMenuWin() == nil:
+        restoreFocusAfterMenu(mb)
+      return rc
     if not mb.palette: return 0
     let k = cast[ptr KeyTyped](dp)
     let code = k.code
