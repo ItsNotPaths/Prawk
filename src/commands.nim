@@ -1,5 +1,5 @@
-import std/os
-import project, editor, term
+import std/[os, strutils]
+import project, editor, term, terminalstack
 
 type
   CmdProc* = proc (args: seq[string]) {.closure.}
@@ -7,7 +7,9 @@ type
     name*: string
     invoke*: CmdProc
 
-var registry*: seq[Command]
+var
+  registry*: seq[Command]
+  openPaletteWithCb*: proc(text: string) {.closure.}
 
 proc registerCommand*(name: string, p: CmdProc) =
   for i in 0 ..< registry.len:
@@ -43,15 +45,62 @@ proc cmdQuit(args: seq[string]) =
   quit(0)
 
 proc cmdHelp(args: seq[string]) =
-  if term.theTermBottom == nil: return
+  # TODO Pass 5: route :help output to results pane
+  let t = stackFocusedTerminal(theTermStack)
+  if t == nil: return
   var buf = "\r\nprawk commands:\r\n"
   for c in registry:
     buf.add("  " & c.name & "\r\n")
-  term.writeText(term.theTermBottom, buf)
+  termWrite(t, buf)
+
+proc cmdEditorOpen(args: seq[string]) =
+  if args.len < 1: return
+  let p = args[0]
+  if not fileExists(p): return
+  if editor.editorIsDirty():
+    if openPaletteWithCb != nil:
+      openPaletteWithCb(":editor.open.force " & p)
+  elif editor.theEditor != nil:
+    editor.editorOpenFile(editor.theEditor, p)
+
+proc cmdEditorOpenForce(args: seq[string]) =
+  if args.len < 1: return
+  editor.editorForceOpenFile(args[0])
+
+proc cmdTermNew(args: seq[string]) =
+  if theTermStack == nil: return
+  let name = if args.len >= 1: args[0] else: ""
+  let t = stackAddTerminal(theTermStack, name)
+  if t != nil:
+    stackFocusAt(theTermStack, theTermStack.terms.len - 1)
+    stackPersist(theTermStack)
+
+proc cmdTermKill(args: seq[string]) =
+  if theTermStack == nil or args.len < 1: return
+  var idx = -1
+  try: idx = parseInt(args[0])
+  except ValueError: return
+  if idx < 0 or idx >= theTermStack.terms.len: return
+  stackKillAt(theTermStack, idx)
+  stackPersist(theTermStack)
+
+proc cmdTermName(args: seq[string]) =
+  if theTermStack == nil or args.len < 2: return
+  var idx = -1
+  try: idx = parseInt(args[0])
+  except ValueError: return
+  if idx < 0 or idx >= theTermStack.terms.len: return
+  stackNameAt(theTermStack, idx, args[1])
+  stackPersist(theTermStack)
 
 proc registerBuiltins*() =
   registerCommand("project.load", cmdProjectLoad)
   registerCommand("project.parent", cmdProjectParent)
   registerCommand("editor.save", cmdEditorSave)
+  registerCommand("editor.open", cmdEditorOpen)
+  registerCommand("editor.open.force", cmdEditorOpenForce)
   registerCommand("quit", cmdQuit)
   registerCommand("help", cmdHelp)
+  registerCommand("term.new", cmdTermNew)
+  registerCommand("term.kill", cmdTermKill)
+  registerCommand("term.name", cmdTermName)

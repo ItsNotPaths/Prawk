@@ -1,5 +1,5 @@
 import std/[os, algorithm]
-import luigi, project, commands
+import luigi, project, commands, resultspane, menubar
 
 type
   Node = object
@@ -9,20 +9,12 @@ type
     isDir: bool
     expanded: bool
 
-  FolderTree* = object
-    e*: Element
+  FolderTree = object
     nodes: seq[Node]
-    topLine: int
-    selected: int
-    pendingLoadIdx: int
 
-var theTree*: ptr FolderTree
-
-proc glyphDims(): (cint, cint) =
-  if ui.activeFont != nil:
-    (ui.activeFont.glyphWidth, ui.activeFont.glyphHeight)
-  else:
-    (9.cint, 16.cint)
+var
+  theTreeState: FolderTree
+  theTreePane: ptr ResultsPane
 
 proc listDir(path: string, depth: int): seq[Node] =
   var dirs, files: seq[Node]
@@ -42,13 +34,6 @@ proc rebuildRoot(tr: ptr FolderTree) =
   tr.nodes.setLen(0)
   if project.projectRoot.len > 0:
     tr.nodes = listDir(project.projectRoot, 0)
-  tr.topLine = 0
-  tr.selected = 0
-  tr.pendingLoadIdx = -1
-
-proc refresh*(tr: ptr FolderTree) =
-  rebuildRoot(tr)
-  elementRepaint(addr tr.e, nil)
 
 proc expandAt(tr: ptr FolderTree, idx: int) =
   if idx < 0 or idx >= tr.nodes.len: return
@@ -81,150 +66,87 @@ proc rowText(n: Node): string =
   if n.isDir and not n.expanded:
     result.add('/')
 
-proc visibleRows(tr: ptr FolderTree): int =
-  let (_, gH) = glyphDims()
-  max(1, int(tr.e.bounds.b - tr.e.bounds.t) div max(1, int(gH)))
+# ---------- Provider hooks ----------
 
-proc followSelection(tr: ptr FolderTree) =
-  let vr = visibleRows(tr)
-  if tr.selected < tr.topLine:
-    tr.topLine = tr.selected
-  elif tr.selected >= tr.topLine + vr:
-    tr.topLine = tr.selected - vr + 1
-  if tr.topLine < 0: tr.topLine = 0
+proc treeRowCount(s: pointer): int {.nimcall.} =
+  cast[ptr FolderTree](s).nodes.len
 
-proc loadSelectedAsProject(tr: ptr FolderTree) =
-  if tr.selected < 0 or tr.selected >= tr.nodes.len: return
-  let n = tr.nodes[tr.selected]
-  if not n.isDir: return
-  discard runCommand("project.load", @[n.path])
+proc treeRowText(s: pointer, i: int): string {.nimcall.} =
+  let tr = cast[ptr FolderTree](s)
+  if i < 0 or i >= tr.nodes.len: ""
+  else: rowText(tr.nodes[i])
 
-proc onLoadAsProject(cp: pointer) {.cdecl.} =
-  if theTree != nil: loadSelectedAsProject(theTree)
+proc treePaintRow(s: pointer, i: int, p: ptr Painter,
+                  r: Rectangle, sel: bool) {.nimcall.} =
+  let tr = cast[ptr FolderTree](s)
+  if i < 0 or i >= tr.nodes.len: return
+  let bg = if sel: ui.theme.selected else: ui.theme.panel1
+  drawBlock(p, r, bg)
+  let textColor = if sel: ui.theme.textSelected else: ui.theme.text
+  let txt = rowText(tr.nodes[i])
+  drawString(p, r, txt.cstring, txt.len, textColor, cint(ALIGN_LEFT), nil)
 
-proc openLoadMenu(tr: ptr FolderTree) =
-  if tr.selected < 0 or tr.selected >= tr.nodes.len: return
-  if not tr.nodes[tr.selected].isDir: return
-  let m = menuCreate(addr tr.e, 0)
-  menuAddItem(m, 0, "Load As Project Folder", invoke = onLoadAsProject)
-  menuShow(m)
+proc treeOnSelect(s: pointer, i: int) {.nimcall.} =
+  let tr = cast[ptr FolderTree](s)
+  if i < 0 or i >= tr.nodes.len: return
+  let n = tr.nodes[i]
+  if n.isDir:
+    if n.expanded: collapseAt(tr, i)
+    else: expandAt(tr, i)
+  else:
+    discard runCommand("editor.open", @[n.path])
 
-proc treeMessage(element: ptr Element, message: Message, di: cint, dp: pointer): cint {.cdecl.} =
-  let tr = cast[ptr FolderTree](element)
+proc treeOnContext(s: pointer, i: int) {.nimcall.} =
+  let tr = cast[ptr FolderTree](s)
+  if i < 0 or i >= tr.nodes.len: return
+  if not tr.nodes[i].isDir: return
+  openPaletteWith(":project.load " & tr.nodes[i].path)
 
-  if message == msgPaint:
-    let painter = cast[ptr Painter](dp)
-    let (_, gH) = glyphDims()
-    drawBlock(painter, element.bounds, ui.theme.panel1)
-    let bx = element.bounds.l
-    let by = element.bounds.t
-    let vr = visibleRows(tr)
-    for i in 0 ..< vr:
-      let idx = tr.topLine + i
-      if idx >= tr.nodes.len: break
-      let n = tr.nodes[idx]
-      let y = by + cint(i) * gH
-      let rowRect = Rectangle(l: bx, r: element.bounds.r, t: y, b: y + gH)
-      if idx == tr.pendingLoadIdx:
-        drawBlock(painter, rowRect, 0xea6962'u32)
-      elif idx == tr.selected:
-        drawBlock(painter, rowRect, ui.theme.selected)
-      let textColor =
-        if idx == tr.pendingLoadIdx or idx == tr.selected: ui.theme.textSelected
-        else:                                              ui.theme.text
-      var txt = rowText(n)
-      if idx == tr.pendingLoadIdx:
-        txt.add("  [press Shift+Enter again to load as project]")
-      drawString(painter, rowRect, txt.cstring, txt.len,
-                 textColor, cint(ALIGN_LEFT), nil)
-    if element.window != nil and element.window.focused == element:
-      drawBorder(painter, element.bounds, 0x9253be'u32,
-                 Rectangle(l: 2, r: 2, t: 2, b: 2))
-    return 1
+proc treeOnKey(s: pointer, code: cint, ctrl, shift: bool): bool {.nimcall.} =
+  let tr = cast[ptr FolderTree](s)
+  if theTreePane == nil: return false
+  let pane = theTreePane
+  let sel = pane.selected
+  let n = tr.nodes.len
 
-  elif message == msgLeftDown:
-    elementFocus(element)
-    tr.pendingLoadIdx = -1
-    let (_, gH) = glyphDims()
-    let w = element.window
-    if w != nil:
-      let ly = w.cursorY - element.bounds.t
-      let idx = tr.topLine + int(ly div max(1, gH))
-      if idx >= 0 and idx < tr.nodes.len:
-        tr.selected = idx
-        if tr.nodes[idx].isDir:
-          if tr.nodes[idx].expanded: collapseAt(tr, idx)
-          else: expandAt(tr, idx)
-      elementRepaint(element, nil)
-    return 1
+  if shift and code == int(KEYCODE_ENTER):
+    if sel >= 0 and sel < n and tr.nodes[sel].isDir:
+      openPaletteWith(":project.load " & tr.nodes[sel].path)
+    return true
 
-  elif message == msgRightDown:
-    elementFocus(element)
-    let (_, gH) = glyphDims()
-    let w = element.window
-    if w != nil:
-      let ly = w.cursorY - element.bounds.t
-      let idx = tr.topLine + int(ly div max(1, gH))
-      if idx >= 0 and idx < tr.nodes.len:
-        tr.selected = idx
-        elementRepaint(element, nil)
-        if tr.nodes[idx].isDir:
-          openLoadMenu(tr)
-    return 1
+  if ctrl and code == int(KEYCODE_LETTER('N')):
+    if sel < n - 1: pane.selected = sel + 1
+    return true
+  if ctrl and code == int(KEYCODE_LETTER('P')):
+    if sel > 0: pane.selected = sel - 1
+    return true
+  if code == int(KEYCODE_RIGHT):
+    if sel >= 0 and sel < n and tr.nodes[sel].isDir and not tr.nodes[sel].expanded:
+      expandAt(tr, sel)
+    return true
+  if code == int(KEYCODE_LEFT):
+    if sel >= 0 and sel < n and tr.nodes[sel].isDir and tr.nodes[sel].expanded:
+      collapseAt(tr, sel)
+    return true
+  false
 
-  elif message == msgMouseWheel:
-    let vr = visibleRows(tr)
-    tr.topLine += int(di) div 60
-    if tr.topLine < 0: tr.topLine = 0
-    let maxTop = max(0, tr.nodes.len - vr)
-    if tr.topLine > maxTop: tr.topLine = maxTop
-    elementRepaint(element, nil)
-    return 1
+proc treeProvider(): Provider =
+  Provider(
+    state: cast[pointer](addr theTreeState),
+    name: "files",
+    rowCount: treeRowCount,
+    rowText: treeRowText,
+    onPaintRow: treePaintRow,
+    onSelect: treeOnSelect,
+    onContext: treeOnContext,
+    onKey: treeOnKey,
+    onBack: nil)
 
-  elif message == msgKeyTyped:
-    let k = cast[ptr KeyTyped](dp)
-    let w = element.window
-    if w != nil and w.alt: return 0
-    let code = k.code
-    let ctrl  = (w != nil and w.ctrl)
-    let shift = (w != nil and w.shift)
-    if shift and code == int(KEYCODE_ENTER):
-      if tr.selected >= 0 and tr.selected < tr.nodes.len and tr.nodes[tr.selected].isDir:
-        if tr.pendingLoadIdx == tr.selected:
-          tr.pendingLoadIdx = -1
-          loadSelectedAsProject(tr)
-        else:
-          tr.pendingLoadIdx = tr.selected
-          elementRepaint(element, nil)
-      return 1
-    if tr.pendingLoadIdx != -1:
-      tr.pendingLoadIdx = -1
-      elementRepaint(element, nil)
-    if code == int(KEYCODE_DOWN) or (ctrl and code == int(KEYCODE_LETTER('N'))):
-      if tr.selected < tr.nodes.len - 1: inc tr.selected
-    elif code == int(KEYCODE_UP) or (ctrl and code == int(KEYCODE_LETTER('P'))):
-      if tr.selected > 0: dec tr.selected
-    elif code == int(KEYCODE_RIGHT) or code == int(KEYCODE_ENTER):
-      if tr.selected >= 0 and tr.selected < tr.nodes.len and tr.nodes[tr.selected].isDir:
-        expandAt(tr, tr.selected)
-    elif code == int(KEYCODE_LEFT):
-      if tr.selected >= 0 and tr.selected < tr.nodes.len and
-         tr.nodes[tr.selected].isDir and tr.nodes[tr.selected].expanded:
-        collapseAt(tr, tr.selected)
-    else:
-      return 0
-    followSelection(tr)
-    elementRepaint(element, nil)
-    return 1
-
-  return 0
-
-proc treeCreate*(parent: ptr Element, flags: uint32 = 0): ptr FolderTree =
-  let e = elementCreate(csize_t(sizeof(FolderTree)), parent, flags or ELEMENT_TAB_STOP,
-                        treeMessage, "FolderTree")
-  let tr = cast[ptr FolderTree](e)
-  rebuildRoot(tr)
-  theTree = tr
-  project.onProjectChange = proc() =
-    if theTree != nil: refresh(theTree)
-  return tr
+proc treeInstall*(pane: ptr ResultsPane) =
+  theTreePane = pane
+  rebuildRoot(addr theTreeState)
+  paneSetProvider(pane, treeProvider())
+  project.registerProjectChange(proc() =
+    rebuildRoot(addr theTreeState)
+    if theTreePane != nil:
+      paneResetSelection(theTreePane))

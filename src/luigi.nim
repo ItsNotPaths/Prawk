@@ -39,8 +39,13 @@ const
   ELEMENT_TAB_STOP*  = uint32(1) shl 20
   ELEMENT_HIDE*      = uint32(1) shl 29
 
+  PANEL_HORIZONTAL*  = uint32(1) shl 0
   PANEL_GRAY*        = uint32(1) shl 2
   PANEL_EXPAND*      = uint32(1) shl 4
+
+  BUTTON_SMALL*      = uint32(1) shl 0
+  BUTTON_CAN_FOCUS*  = uint32(1) shl 2
+  BUTTON_CHECKED*    = uint32(1) shl 15
 
   SPLIT_PANE_VERTICAL* = uint32(1) shl 0
 
@@ -151,6 +156,11 @@ type
     e*: Element
   Menu*      {.bycopy, importc: "UIMenu",      lH.} = object
     e*: Element
+  Button*    {.bycopy, importc: "UIButton",    lH.} = object
+    e*: Element
+    label*: cstring
+    labelBytes*: int           # C: ptrdiff_t
+    invoke*: proc (cp: pointer) {.cdecl.}
 
   StringSelection* {.bycopy, importc: "UIStringSelection", lH.} = object
 
@@ -185,6 +195,10 @@ proc elementMessage*(e: ptr Element; message: Message; di: cint; dp: pointer): c
 proc elementFocus*(e: ptr Element)              {.cdecl, lH, importc: "UIElementFocus".}
 proc elementRepaint*(e: ptr Element; region: ptr Rectangle)
                     {.cdecl, lH, importc: "UIElementRepaint".}
+proc elementRefresh*(e: ptr Element)             {.cdecl, lH, importc: "UIElementRefresh".}
+proc elementDestroy*(e: ptr Element)             {.cdecl, lH, importc: "UIElementDestroy".}
+proc elementMove*(e: ptr Element; bounds: Rectangle; alwaysLayout: bool)
+                    {.cdecl, lH, importc: "UIElementMove".}
 proc elementAnimate*(e: ptr Element; stop: bool): bool
                     {.cdecl, lH, importc: "UIElementAnimate".}
 
@@ -201,6 +215,9 @@ proc splitPaneCreate*(parent: ptr Element; flags: uint32; weight: cfloat): ptr S
 proc labelCreate*(parent: ptr Element; flags: uint32; label: cstring;
                   labelBytes: int = castInt): ptr Label
                   {.cdecl, lH, importc: "UILabelCreate".}
+proc buttonCreate*(parent: ptr Element; flags: uint32; label: cstring;
+                   labelBytes: int = castInt): ptr Button
+                  {.cdecl, lH, importc: "UIButtonCreate".}
 
 proc menuCreate*(parent: ptr Element; flags: uint32): ptr Menu
                   {.cdecl, lH, importc: "UIMenuCreate".}

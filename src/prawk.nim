@@ -1,5 +1,5 @@
 import std/os
-import ui, theme, font, project, commands
+import ui, theme, font, project, commands, config
 
 proc resolveArgv() =
   if paramCount() == 0:
@@ -18,9 +18,11 @@ proc resolveArgv() =
 initialise()
 loadTheme()
 loadFont()
+config.loadConfig()
 resolveArgv()
 registerBuiltins()
 let refs = buildUi()
 if project.startFile.len > 0:
   editorOpenFile(refs.editor, project.startFile)
+applyInitialFocus(refs)
 quit messageLoop()

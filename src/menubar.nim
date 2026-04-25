@@ -1,9 +1,9 @@
 import std/strutils
-import luigi, commands
+import luigi, commands, config
 
 type
   MenuOption = object
-    label: cstring
+    label: string
     command: string
     args: seq[string]
 
@@ -20,6 +20,8 @@ type
     palette*: bool
     palBuf: string
     menuOpen: bool
+
+var theMenubar*: ptr Menubar
 
 proc menusClose(): bool {.cdecl, importc: "_UIMenusClose".}
 
@@ -100,8 +102,23 @@ proc restoreFocusAfterMenu(mb: ptr Menubar) =
     elementFocus(prev)
     elementRepaint(prev, nil)
 
+proc rebuildFileOptions(mb: ptr Menubar) =
+  mb.items[0].options = @[
+    MenuOption(label: "Load Parent As Project", command: "project.parent"),
+    MenuOption(label: "Save",                   command: "editor.save"),
+    MenuOption(label: "Save As..."),
+    MenuOption(label: "Quit",                   command: "quit"),
+  ]
+  let recents = config.readRecents("recents.files")
+  if recents.len > 0:
+    mb.items[0].options.add(MenuOption(label: "--- Recent ---"))
+    for p in recents:
+      mb.items[0].options.add(MenuOption(
+        label: p, command: "editor.open", args: @[p]))
+
 proc spawnMenu(mb: ptr Menubar, idx: int) =
   if idx < 0 or idx >= mb.items.len: return
+  if idx == 0: rebuildFileOptions(mb)
   if mb.items[idx].options.len == 0: return
   # Override-redirect popups don't take X11 keyboard focus on tiling WMs,
   # so keep the main window focused and route keys through the menubar.
@@ -111,7 +128,7 @@ proc spawnMenu(mb: ptr Menubar, idx: int) =
   let m = menuCreate(addr mb.e, 0)
   for i in 0 ..< mb.items[idx].options.len:
     let optPtr = addr mb.items[idx].options[i]
-    menuAddItem(m, 0, mb.items[idx].options[i].label,
+    menuAddItem(m, 0, mb.items[idx].options[i].label.cstring,
                 invoke = runOption, cp = cast[pointer](optPtr))
   menuShow(m)
   var child = firstChild(addr m.e)
@@ -263,8 +280,14 @@ proc menubarMessage(element: ptr Element, message: Message, di: cint, dp: pointe
 
   return 0
 
-proc mkOption(label: cstring, cmd: string = "", args: seq[string] = @[]): MenuOption =
+proc mkOption(label: string, cmd: string = "", args: seq[string] = @[]): MenuOption =
   MenuOption(label: label, command: cmd, args: args)
+
+proc openPaletteWith*(text: string) =
+  if theMenubar == nil: return
+  enterPalette(theMenubar)
+  theMenubar.palBuf = text
+  elementRepaint(addr theMenubar.e, nil)
 
 proc menubarCreate*(parent: ptr Element, flags: uint32 = 0): ptr Menubar =
   let e = elementCreate(csize_t(sizeof(Menubar)), parent, flags or ELEMENT_TAB_STOP,
@@ -287,4 +310,6 @@ proc menubarCreate*(parent: ptr Element, flags: uint32 = 0): ptr Menubar =
     mkOption("Toggle Fullscreen"),
   ])
   mb.hovered = -1
+  theMenubar = mb
+  commands.openPaletteWithCb = proc(text: string) = openPaletteWith(text)
   return mb

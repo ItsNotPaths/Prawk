@@ -32,16 +32,17 @@ proc tmt_screen(vt: ptr TMT): ptr TmtScreen {.importc, header: "tmt.h".}
 proc tmt_cursor(vt: ptr TMT): ptr TmtPoint {.importc, header: "tmt.h".}
 proc tmt_clean(vt: ptr TMT) {.importc, header: "tmt.h".}
 
-type Terminal* = object
-  e*: Element
-  vt: ptr TMT
-  ptyFd: cint
-  pid: Pid
-  rows, cols: int
-  readBuf: array[4096, char]
+type
+  Terminal* = object
+    e*: Element
+    name*: string
+    rows, cols: int
+    vt: ptr TMT
+    ptyFd*: cint
+    pid: Pid
+    readBuf: array[4096, char]
 
 var allTerminals*: seq[ptr Terminal]
-var theTermBottom*: ptr Terminal
 
 const fgPalette: array[9, uint32] = [
   0x32302f'u32, 0xea6962'u32, 0xa9b665'u32, 0xd8a657'u32,
@@ -127,7 +128,6 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
     let k = cast[ptr KeyTyped](dp)
     if t.ptyFd < 0: return 0
     let w = element.window
-    # Let Alt+... bubble up so the window can do pane navigation / shortcuts.
     if w != nil and w.alt: return 0
     var seqStr: string = ""
     let code = k.code
@@ -163,7 +163,6 @@ proc terminalCreate*(parent: ptr Element, flags: uint32 = 0): ptr Terminal =
   let e = elementCreate(csize_t(sizeof(Terminal)), parent, flags or ELEMENT_TAB_STOP,
                         terminalMessage, "Terminal")
   let t = cast[ptr Terminal](e)
-  t.ptyFd = -1
   t.rows = 24; t.cols = 80
   t.vt = tmt_open(csize_t(t.rows), csize_t(t.cols), nil, nil, nil)
   let (fd, pid) = startShell(t.rows, t.cols, project.projectRoot)
@@ -172,10 +171,16 @@ proc terminalCreate*(parent: ptr Element, flags: uint32 = 0): ptr Terminal =
   allTerminals.add(t)
   return t
 
-proc writeText*(t: ptr Terminal, s: string) =
+proc termWrite*(t: ptr Terminal, s: string) =
   if t == nil or t.vt == nil or s.len == 0: return
   tmt_write(t.vt, s.cstring, csize_t(s.len))
   elementRepaint(addr t.e, nil)
+
+proc termRunCmd*(t: ptr Terminal, line: string) =
+  ## Write a command line into the PTY, appending a newline.
+  if t == nil or t.ptyFd < 0 or line.len == 0: return
+  let payload = line & "\n"
+  discard write(t.ptyFd, payload.cstring, payload.len)
 
 proc drainAll*() =
   for t in allTerminals:

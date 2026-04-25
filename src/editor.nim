@@ -1,5 +1,5 @@
 import std/[os, strutils]
-import luigi
+import luigi, config
 
 type
   EditorBuf = object
@@ -67,7 +67,17 @@ proc editorOpenFile*(ed: ptr Editor, path: string) =
       discard
   if ed.buf.lines.len == 0:
     ed.buf.lines.add("")
+  if path.len > 0:
+    config.pushRecent("recents.files", path)
   elementRepaint(addr ed.e, nil)
+
+proc editorIsDirty*(): bool =
+  theEditor != nil and theEditor.buf.dirty
+
+proc editorForceOpenFile*(path: string) =
+  if theEditor != nil:
+    theEditor.buf.dirty = false
+    editorOpenFile(theEditor, path)
 
 proc insertText(ed: ptr Editor, s: string) =
   if s.len == 0: return
@@ -231,7 +241,7 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
     elif code == int(KEYCODE_BACKSPACE):
       backspace(ed)
     elif code == int(KEYCODE_TAB):
-      insertText(ed, "    ")
+      insertText(ed, config.indentString())
     elif k.textBytes > 0:
       var s = newString(int(k.textBytes))
       copyMem(addr s[0], k.text, int(k.textBytes))
