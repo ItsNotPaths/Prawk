@@ -5,6 +5,9 @@ embedded terminals, a git pane, and a master command-line. Linux x86_64. ~250 KB
 stripped binary, single file. Runtime deps: `libX11`, `libfreetype.so.6`, `git`,
 `xclip`, `fc-match`.
 
+![alt text](https://files.paths.place/prawk-ss-1.png)
+![alt text](https://files.paths.place/prawk-ss-2.png)
+
 ## Run
 
 ```
