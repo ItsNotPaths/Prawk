@@ -1,9 +1,10 @@
 import luigi
-import term, pump, editor, editortabs, menubar, tree, providers, config, resultspane, terminalstack, clshell, project, commands, minimap
+import term, pump, editor, editortabs, menubar, tree, providers, config, resultspane, terminalstack, clshell, project, commands, minimap, gitpane
 export luigi, editor, menubar
 
 var
   paneEl: ptr Element
+  gitPaneEl: ptr Element
   editorEl: ptr Element
   tabPaneEl: ptr Element
   termHostEl: ptr Element
@@ -23,7 +24,7 @@ proc isInTermStack(e: ptr Element): bool =
 
 proc columnOf(e: ptr Element): int =
   if e == nil: return -1
-  if e == paneEl: return 0
+  if e == paneEl or e == gitPaneEl: return 0
   if e == editorEl or (tabPaneEl != nil and e == tabPaneEl): return 1
   if isInTermStack(e): return 2
   -1
@@ -76,6 +77,8 @@ proc onWinMsg(element: ptr Element, message: Message, di: cint, dp: pointer): ci
         let nextIdx = termStackRef.focusIdx + 1
         if nextIdx < termStackRef.terms.len:
           stackFocusAt(termStackRef, nextIdx)
+      elif col == 0 and cur == paneEl and gitPaneEl != nil:
+        focusElement(gitPaneEl)
     elif up:
       if col == 2 and termStackRef != nil and termStackRef.terms.len > 1:
         let prevIdx = termStackRef.focusIdx - 1
@@ -83,6 +86,8 @@ proc onWinMsg(element: ptr Element, message: Message, di: cint, dp: pointer): ci
           stackFocusAt(termStackRef, prevIdx)
       elif col == 1 and tabPaneEl != nil:
         focusElement(tabPaneEl)
+      elif col == 0 and cur == gitPaneEl and paneEl != nil:
+        focusElement(paneEl)
     return 1
   return 0
 
@@ -117,17 +122,13 @@ type UiRefs* = object
   sidebarSplit*: ptr SplitPane
   innerSplit*: ptr SplitPane
   pane*: ptr ResultsPane
-  gitPane*: ptr Panel
+  gitPane*: ptr GitPane
   editorCol*: ptr Panel
   editorTabs*: ptr EditorTabs
   editorBody*: ptr Panel
   editor*: ptr Editor
   minimap*: ptr Minimap
   termStack*: ptr TerminalStack
-
-proc stubPanel(parent: ptr Element, label: cstring): ptr Panel =
-  result = panelCreate(parent, PANEL_GRAY or PANEL_EXPAND)
-  discard labelCreate(addr result.e, 0, label)
 
 proc buildUi*(): UiRefs =
   result.window = windowCreate(nil, 0, "prawk", 900, 600)
@@ -142,11 +143,12 @@ proc buildUi*(): UiRefs =
 
   result.sidebarSplit = splitPaneCreate(addr result.rootSplit.e, SPLIT_PANE_VERTICAL, 0.55)
   result.pane = paneCreate(addr result.sidebarSplit.e)
-  result.gitPane = stubPanel(addr result.sidebarSplit.e, "git (later)")
+  result.gitPane = gitPaneCreate(addr result.sidebarSplit.e)
   treeInstall(result.pane)
   providersInstall(result.pane)
   clShellInit(project.projectRoot)
   clShellInstall(result.pane)
+  gitPaneInstall()
 
   # innerSplit: editorCol | terminal-stack
   result.innerSplit = splitPaneCreate(addr result.rootSplit.e, 0, 0.65)
@@ -176,6 +178,7 @@ proc buildUi*(): UiRefs =
     discard stackAddTerminal(result.termStack, nm)
 
   paneEl       = addr result.pane.e
+  gitPaneEl    = addr result.gitPane.e
   editorEl     = addr result.editor.e
   tabPaneEl    = addr result.editorTabs.e
   termHostEl   = addr result.termStack.e

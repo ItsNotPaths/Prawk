@@ -1,10 +1,11 @@
 import luigi
-import term, clshell, menubar, editor, config, minimap
+import term, clshell, menubar, editor, config, minimap, gitpane
 
 proc usleep(us: cuint): cint {.importc, header: "<unistd.h>", discardable.}
 
 var
   blinkTicks: int = 0
+  gitPollTicks: int = 0
   lastMinimapTop: int = -1
   lastMinimapBuf: pointer = nil
   lastMinimapLines: int = -1
@@ -17,6 +18,10 @@ proc pumpMessage(e: ptr Element, m: Message, di: cint, dp: pointer): cint {.cdec
     clTickShift(e.window)
     if clShellRunning() and theMenubar != nil:
       elementRepaint(addr theMenubar.e, nil)
+    inc gitPollTicks
+    if gitPollTicks >= 25:   # ~500ms at 50 Hz
+      gitPollTicks = 0
+      gitPaneTickPoll()
     inc blinkTicks
     if blinkTicks >= 30:    # ~600ms at 50 Hz
       blinkTicks = 0

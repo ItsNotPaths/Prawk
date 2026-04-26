@@ -6,7 +6,7 @@ type
     tkDefault, tkKeyword, tkString, tkComment, tkNumber, tkOperator,
     tkProcName, tkTypeName, tkReturnType
 
-  LangKind* = enum lkGeneric, lkNim
+  LangKind* = enum lkGeneric, lkNim, lkDiff
 
   Span* = object
     col*, n*: int
@@ -28,11 +28,12 @@ const nimProcKeywords = ["proc", "func", "iterator", "template", "macro",
 template embedSyntax(n: untyped): (string, string) =
   (astToStr(n), staticRead("../syntax/" & astToStr(n) & ".conf"))
 
-const builtinSyntaxes*: array[4, (string, string)] = [
+const builtinSyntaxes*: array[5, (string, string)] = [
   embedSyntax(nim),
   embedSyntax(c),
   embedSyntax(python),
   embedSyntax(js),
+  embedSyntax(diff),
 ]
 
 var
@@ -42,6 +43,7 @@ var
 proc parseRule(name, body: string): SyntaxRule =
   result.name = name
   if name == "nim": result.lang = lkNim
+  elif name == "diff": result.lang = lkDiff
   for raw in body.splitLines():
     let line = raw.strip()
     if line.len == 0 or line.startsWith('#'): continue
@@ -82,6 +84,11 @@ proc syntaxForPath*(path: string): ptr SyntaxRule =
   if not byExt.hasKey(ext): return nil
   return addr rules[byExt[ext]]
 
+proc syntaxByName*(name: string): ptr SyntaxRule =
+  for i in 0 ..< rules.len:
+    if rules[i].name == name: return addr rules[i]
+  nil
+
 proc isIdentStart(c: char): bool {.inline.} = c.isAlphaAscii or c == '_'
 proc isIdentCont(c: char): bool {.inline.} = c.isAlphaNumeric or c == '_'
 
@@ -99,6 +106,24 @@ proc tokenizeLine*(line: string, rule: ptr SyntaxRule,
   if rule == nil:
     if line.len > 0:
       spans.add(Span(col: 0, n: line.len, kind: tkDefault))
+    return 0
+
+  if rule.lang == lkDiff:
+    if line.len == 0: return 0
+    let kind =
+      if line.startsWith("+++") or line.startsWith("---"):
+        tkComment
+      elif line.startsWith("## ") or line.startsWith("@@"):
+        tkNumber
+      elif line.startsWith("diff --git") or line.startsWith("index ") or
+           line.startsWith("new file") or line.startsWith("deleted file") or
+           line.startsWith("similarity ") or line.startsWith("rename "):
+        tkComment
+      else:
+        # +/- and context lines render in the standard fg colour. The row
+        # gets a gentle red/green background instead — see lineBgColor.
+        tkDefault
+    spans.add(Span(col: 0, n: line.len, kind: kind))
     return 0
 
   var i = 0
@@ -212,6 +237,29 @@ proc tokenizeLine*(line: string, rule: ptr SyntaxRule,
     inc i
 
   return 0'u8
+
+proc mixColor(a, b: uint32, alpha: float): uint32 {.inline.} =
+  let inv = 1.0 - alpha
+  let ar = int((a shr 16) and 0xFF); let br = int((b shr 16) and 0xFF)
+  let aG = int((a shr 8)  and 0xFF); let bG = int((b shr 8)  and 0xFF)
+  let aB = int(a and 0xFF);          let bB = int(b and 0xFF)
+  let nr = int(float(ar) * alpha + float(br) * inv)
+  let ng = int(float(aG) * alpha + float(bG) * inv)
+  let nb = int(float(aB) * alpha + float(bB) * inv)
+  uint32((nr shl 16) or (ng shl 8) or nb)
+
+proc lineBgColor*(rule: ptr SyntaxRule, line: string): uint32 =
+  ## 0 = no row background tint. Diff `+` / `-` lines get a gentle green /
+  ## red blended toward the editor's code background. File / hunk header
+  ## lines stay untinted so the eye can find section boundaries.
+  if rule == nil or rule.lang != lkDiff or line.len == 0: return 0
+  if line.startsWith("+++") or line.startsWith("---"): return 0
+  let bg = ui.theme.codeBackground
+  if line[0] == '+':
+    return mixColor(theme.currentPalette.codeType, bg, 0.18)
+  if line[0] == '-':
+    return mixColor(theme.currentPalette.urgent, bg, 0.20)
+  0
 
 proc colorFor*(kind: TokenKind): uint32 {.inline.} =
   case kind

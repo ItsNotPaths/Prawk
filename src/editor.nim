@@ -30,6 +30,7 @@ var
   theEditor*: ptr Editor
   cursorBlinkOn*: bool = true
   editorAltUpCb*: proc() {.closure.}   # set by editortabs.nim
+  editorTabsRepaintCb*: proc() {.closure.}   # set by editortabs.nim
 
 template buf(ed: ptr Editor): var EditorBuf = ed.tabs[ed.activeIdx]
 
@@ -160,7 +161,9 @@ proc deleteSelection(ed: ptr Editor) =
   ed.buf.cursorRow = sR
   ed.buf.cursorCol = sC
   ed.buf.hasSel = false
+  let was = ed.buf.dirty
   ed.buf.dirty = true
+  if not was and editorTabsRepaintCb != nil: editorTabsRepaintCb()
   invalidateFrom(ed, sR)
 
 proc selAll(ed: ptr Editor) =
@@ -210,7 +213,7 @@ proc editorOpenFile*(ed: ptr Editor, path: string) =
   let existing = findTab(ed, path)
   if existing >= 0:
     ed.activeIdx = existing
-    if path.len > 0:
+    if path.len > 0 and not path.startsWith("diff://"):
       config.pushRecent("recents.files", path)
     elementRepaint(addr ed.e, nil)
     return
@@ -226,8 +229,43 @@ proc editorOpenFile*(ed: ptr Editor, path: string) =
     loadIntoBuf(nb, path)
     ed.tabs.add(nb)
     ed.activeIdx = ed.tabs.len - 1
-  if path.len > 0:
+  if path.len > 0 and not path.startsWith("diff://"):
     config.pushRecent("recents.files", path)
+  elementRepaint(addr ed.e, nil)
+
+proc editorOpenSynthetic*(ed: ptr Editor, synthPath, content: string) =
+  ## Opens a non-disk buffer (e.g. a git diff). `synthPath` is used as the
+  ## tab's identity for dedupe; saving is a no-op for paths starting with
+  ## `diff://` (handled by saveCurrent). The buffer is fully editable in
+  ## memory — edits just don't persist anywhere.
+  if ed == nil: return
+  let existing = findTab(ed, synthPath)
+  if existing >= 0:
+    ed.activeIdx = existing
+    elementRepaint(addr ed.e, nil)
+    return
+  proc fillBuf(b: var EditorBuf, p, body: string) =
+    b.path = p
+    b.lines = body.splitLines()
+    if b.lines.len == 0: b.lines.add("")
+    b.cursorRow = 0; b.cursorCol = 0
+    b.topLine = 0; b.topCol = 0
+    b.dirty = false
+    b.mode = config.cursorMode
+    b.syntax = highlight.syntaxByName("diff")
+    b.lineStartStates.setLen(0)
+    b.dirtyFromRow = 0
+  let scratchOnly = ed.tabs.len == 1 and ed.tabs[0].path.len == 0 and
+                    not ed.tabs[0].dirty and ed.tabs[0].lines.len == 1 and
+                    ed.tabs[0].lines[0].len == 0
+  if scratchOnly:
+    fillBuf(ed.tabs[0], synthPath, content)
+    ed.activeIdx = 0
+  else:
+    var nb: EditorBuf
+    fillBuf(nb, synthPath, content)
+    ed.tabs.add(nb)
+    ed.activeIdx = ed.tabs.len - 1
   elementRepaint(addr ed.e, nil)
 
 proc editorIsDirty*(): bool =
@@ -265,6 +303,12 @@ proc editorTabPrev*(ed: ptr Editor) =
   ed.activeIdx = (ed.activeIdx - 1 + ed.tabs.len) mod ed.tabs.len
   elementRepaint(addr ed.e, nil)
 
+proc markDirty(ed: ptr Editor) =
+  let was = ed.buf.dirty
+  ed.buf.dirty = true
+  if not was and editorTabsRepaintCb != nil:
+    editorTabsRepaintCb()
+
 proc insertText(ed: ptr Editor, s: string) =
   if s.len == 0: return
   let row = ed.buf.cursorRow
@@ -272,7 +316,7 @@ proc insertText(ed: ptr Editor, s: string) =
   let line = ed.buf.lines[row]
   ed.buf.lines[row] = line.substr(0, col - 1) & s & line.substr(col)
   ed.buf.cursorCol = col + s.len
-  ed.buf.dirty = true
+  markDirty(ed)
   invalidateFrom(ed, row)
 
 proc insertNewline(ed: ptr Editor) =
@@ -283,7 +327,7 @@ proc insertNewline(ed: ptr Editor) =
   ed.buf.lines.insert(line.substr(col), row + 1)
   ed.buf.cursorRow = row + 1
   ed.buf.cursorCol = 0
-  ed.buf.dirty = true
+  markDirty(ed)
   invalidateFrom(ed, row)
 
 proc backspace(ed: ptr Editor) =
@@ -293,7 +337,7 @@ proc backspace(ed: ptr Editor) =
     let line = ed.buf.lines[row]
     ed.buf.lines[row] = line.substr(0, col - 2) & line.substr(col)
     ed.buf.cursorCol = col - 1
-    ed.buf.dirty = true
+    markDirty(ed)
     invalidateFrom(ed, row)
   elif row > 0:
     let prev = ed.buf.lines[row - 1]
@@ -302,7 +346,7 @@ proc backspace(ed: ptr Editor) =
     ed.buf.lines[row - 1] = prev & cur
     ed.buf.lines.delete(row)
     ed.buf.cursorRow = row - 1
-    ed.buf.dirty = true
+    markDirty(ed)
     invalidateFrom(ed, row - 1)
 
 proc isWS(c: char): bool {.inline.} =
@@ -386,14 +430,17 @@ proc killToEnd(ed: ptr Editor) =
   let line = ed.buf.lines[row]
   if col < line.len:
     ed.buf.lines[row] = line.substr(0, col - 1)
-    ed.buf.dirty = true
+    markDirty(ed)
     invalidateFrom(ed, row)
 
 proc saveCurrent*(ed: ptr Editor) =
   if ed.buf.path.len == 0: return
+  if ed.buf.path.startsWith("diff://"): return
   let content = ed.buf.lines.join("\n")
   if saveAtomic(ed.buf.path, content):
+    let was = ed.buf.dirty
     ed.buf.dirty = false
+    if was and editorTabsRepaintCb != nil: editorTabsRepaintCb()
 
 proc activeMode*(ed: ptr Editor): CursorMode =
   if ed == nil or ed.tabs.len == 0: cmInsert
@@ -402,7 +449,23 @@ proc activeMode*(ed: ptr Editor): CursorMode =
 proc editorTabLabel*(ed: ptr Editor, idx: int): string =
   if ed == nil or idx < 0 or idx >= ed.tabs.len: return ""
   let b = ed.tabs[idx]
-  let nm = if b.path.len == 0: "[scratch]" else: extractFilename(b.path)
+  let nm =
+    if b.path.len == 0:
+      "[scratch]"
+    elif b.path.startsWith("diff://"):
+      # diff://<hash>/<relpath>  →  "Δ <hash> <basename>".
+      let rest = b.path[7 .. ^1]
+      let slash = rest.find('/')
+      if slash <= 0:
+        "Δ " & rest
+      else:
+        let hash = rest[0 ..< slash]
+        let rel = rest[slash + 1 .. ^1]
+        let base = extractFilename(rel)
+        let short = if hash.len > 7: hash[0 ..< 7] else: hash
+        "Δ " & short & " " & base
+    else:
+      extractFilename(b.path)
   if b.dirty: "* " & nm else: nm
 
 proc editorTabSwitch*(ed: ptr Editor, idx: int) =
@@ -582,6 +645,14 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
       let leftX = if ed.buf.wrap: contentBaseLeft else: contentLeft0
       let rowRect = Rectangle(l: leftX, r: ed.e.bounds.r,
                               t: y, b: y + gH)
+      # Optional per-row tint (diff +/- lines). Painted before selection
+      # so an active selection still wins visually. Covers content area
+      # only — gutter is repainted last.
+      let lineBg = highlight.lineBgColor(ed.buf.syntax, line)
+      if lineBg != 0:
+        drawBlock(painter,
+                  Rectangle(l: contentBaseLeft, r: ed.e.bounds.r,
+                            t: y, b: y + gH), lineBg)
       # selection band — drawn under tokens so glyphs stay readable.
       if ed.buf.hasSel and rowIdx >= selSR and rowIdx <= selER:
         let rowLo =

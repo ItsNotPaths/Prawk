@@ -175,4 +175,7 @@ proc editorTabsCreate*(parent: ptr Element, flags: uint32 = 0): ptr EditorTabs =
   let t = cast[ptr EditorTabs](e)
   theEditorTabs = t
   editor.editorAltUpCb = proc() = editorTabsFocus()
+  editor.editorTabsRepaintCb = proc() =
+    if theEditorTabs != nil:
+      elementRepaint(addr theEditorTabs.e, nil)
   return t
