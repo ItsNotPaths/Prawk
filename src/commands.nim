@@ -1,5 +1,5 @@
 import std/[os, strutils]
-import luigi, project, editor, terminalstack
+import luigi, project, editor, terminalstack, theme, config
 
 type
   CmdProc* = proc (args: seq[string]) {.closure.}
@@ -49,15 +49,55 @@ proc cmdEditorOpen(args: seq[string]) =
   if args.len < 1: return
   let p = args[0]
   if not fileExists(p): return
-  if editor.editorIsDirty():
-    if openPaletteWithCb != nil:
-      openPaletteWithCb(":editor.open.force " & p)
-  elif editor.theEditor != nil:
+  if editor.theEditor != nil:
     editor.editorOpenFile(editor.theEditor, p)
 
 proc cmdEditorOpenForce(args: seq[string]) =
   if args.len < 1: return
   editor.editorForceOpenFile(args[0])
+
+proc cmdJump(args: seq[string]) =
+  if args.len < 1 or editor.theEditor == nil: return
+  let raw = args[0].strip()
+  if raw.len == 0: return
+  try:
+    if raw[0] == '+':
+      editorJumpRelative(editor.theEditor,  parseInt(raw[1 .. ^1]))
+    elif raw[0] == '-':
+      editorJumpRelative(editor.theEditor, -parseInt(raw[1 .. ^1]))
+    else:
+      editorJumpAbsolute(editor.theEditor,  parseInt(raw))
+  except ValueError:
+    discard
+
+proc cmdTabNext(args: seq[string]) =
+  if editor.theEditor != nil: editorTabNext(editor.theEditor)
+
+proc cmdTabPrev(args: seq[string]) =
+  if editor.theEditor != nil: editorTabPrev(editor.theEditor)
+
+proc cmdTabClose(args: seq[string]) =
+  if editor.theEditor == nil: return
+  let ed = editor.theEditor
+  var idx = editorActiveIdx(ed)
+  if args.len >= 1:
+    try: idx = parseInt(args[0])
+    except ValueError: return
+  if idx < 0 or idx >= editorTabCount(ed): return
+  if editorTabIsDirty(ed, idx):
+    if openPaletteWithCb != nil:
+      openPaletteWithCb("tab.close.force " & $idx)
+    return
+  editorCloseTab(ed, idx)
+
+proc cmdTabCloseForce(args: seq[string]) =
+  if editor.theEditor == nil: return
+  let ed = editor.theEditor
+  var idx = editorActiveIdx(ed)
+  if args.len >= 1:
+    try: idx = parseInt(args[0])
+    except ValueError: return
+  editorTabCloseForce(ed, idx)
 
 proc cmdTermNew(args: seq[string]) =
   if theTermStack == nil: return
@@ -85,6 +125,12 @@ proc cmdTermName(args: seq[string]) =
   stackNameAt(theTermStack, idx, args[1])
   stackPersist(theTermStack)
 
+proc cmdTheme(args: seq[string]) =
+  if args.len < 1: return
+  if theme.loadThemeByName(args[0]):
+    config.setConfigKey("theme", args[0])
+    theme.repaintAllWindows()
+
 proc registerBuiltins*() =
   registerCommand("project.load", cmdProjectLoad)
   registerCommand("project.parent", cmdProjectParent)
@@ -95,3 +141,10 @@ proc registerBuiltins*() =
   registerCommand("term.new", cmdTermNew)
   registerCommand("term.kill", cmdTermKill)
   registerCommand("term.name", cmdTermName)
+  registerCommand("theme", cmdTheme)
+  registerCommand("jump", cmdJump)
+  registerCommand("j", cmdJump)
+  registerCommand("tab.next", cmdTabNext)
+  registerCommand("tab.prev", cmdTabPrev)
+  registerCommand("tab.close", cmdTabClose)
+  registerCommand("tab.close.force", cmdTabCloseForce)

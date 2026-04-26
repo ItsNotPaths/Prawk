@@ -3,13 +3,19 @@ import std/[os, strutils]
 type
   TabMode* = enum tmSpaces2, tmSpaces4, tmTab
   FocusTarget* = enum ftTree, ftEditor, ftTerm
+  LineNumberMode* = enum lnmOff, lnmGlobal, lnmRelative
+  CursorMode* = enum cmInsert, cmNormal
 
 var
   tabMode*: TabMode = tmSpaces4
-  initialFocus*: FocusTarget = ftTerm
+  initialFocus*: FocusTarget = ftTree
   initialTermIdx*: int = 0
   initialTerminals*: int = 2
   grepIgnore*: seq[string] = @[]
+  themePref*: string = "default"
+  cursorJumpLines*: int = 10
+  lineNumbers*: LineNumberMode = lnmGlobal
+  cursorMode*: CursorMode = cmInsert
 
 proc tildify*(p: string): string =
   let h = getHomeDir()
@@ -62,7 +68,55 @@ proc loadConfig*() =
       for raw in val.split(','):
         let s = raw.strip()
         if s.len > 0: grepIgnore.add(s)
+    of "theme":
+      if val.len > 0: themePref = val
+    of "cursor_jump_lines":
+      try:
+        let n = parseInt(val)
+        if n >= 1: cursorJumpLines = n
+      except ValueError: discard
+    of "line_numbers":
+      case val
+      of "off":      lineNumbers = lnmOff
+      of "global":   lineNumbers = lnmGlobal
+      of "relative": lineNumbers = lnmRelative
+      else: discard
+    of "cursor_mode":
+      case val
+      of "insert": cursorMode = cmInsert
+      of "normal": cursorMode = cmNormal
+      else: discard
     else: discard
+
+proc setConfigKey*(key, val: string) =
+  ## Reads ~/.config/prawk/config, replaces or appends `key: val`, writes
+  ## atomically (temp + moveFile). Preserves other lines and comments.
+  try:
+    createDir(configDir())
+    let path = configDir() / "config"
+    var entries: seq[string] = @[]
+    if fileExists(path):
+      for raw in lines(path): entries.add(raw)
+    var replaced = false
+    for i in 0 ..< entries.len:
+      let s = entries[i].strip()
+      if s.len == 0 or s.startsWith('#'): continue
+      let colon = s.find(':')
+      if colon <= 0: continue
+      let k = s[0 ..< colon].strip()
+      if k == key:
+        entries[i] = key & ": " & val
+        replaced = true
+        break
+    if not replaced:
+      entries.add(key & ": " & val)
+    var buf = ""
+    for ln in entries: buf.add(ln & "\n")
+    let tmp = path & ".prawk-tmp"
+    writeFile(tmp, buf)
+    moveFile(tmp, path)
+  except IOError, OSError:
+    discard
 
 proc readRecents*(name: string): seq[string] =
   result = @[]

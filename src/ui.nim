@@ -1,5 +1,5 @@
 import luigi
-import term, pump, editor, menubar, tree, providers, config, resultspane, terminalstack, clshell, project
+import term, pump, editor, menubar, tree, providers, config, resultspane, terminalstack, clshell, project, commands
 export luigi, editor, menubar
 
 var
@@ -50,6 +50,9 @@ proc onWinMsg(element: ptr Element, message: Message, di: cint, dp: pointer): ci
     let k = cast[ptr KeyTyped](dp)
     let w = element.window
     if not w.alt: return 0
+    # Shift+Alt+* is reserved for window-level shortcuts (tab cycling,
+    # terminal focus prev). Let them through to the shortcut layer.
+    if w.shift: return 0
 
     let code = k.code
     let left  = code == int(KEYCODE_LETTER('H')) or code == int(KEYCODE_LEFT)
@@ -79,6 +82,23 @@ proc onWinMsg(element: ptr Element, message: Message, di: cint, dp: pointer): ci
           stackFocusAt(termStackRef, prevIdx)
     return 1
   return 0
+
+proc paletteJumpCb(cp: pointer) {.cdecl.} =
+  openPaletteWith("jump ")
+
+proc tabNextCb(cp: pointer) {.cdecl.} =
+  if theEditor != nil: editorTabNext(theEditor)
+
+proc tabPrevCb(cp: pointer) {.cdecl.} =
+  if theEditor != nil: editorTabPrev(theEditor)
+
+proc altQDispatch(cp: pointer) {.cdecl.} =
+  ## Routes Alt+Q by focused column: editor → close active tab; terminal → kill.
+  if editorEl != nil and editorEl.window != nil and
+     editorEl.window.focused == editorEl:
+    discard runCommand("tab.close")
+    return
+  stackKillFocusedShortcut(cp)
 
 type UiRefs* = object
   window*: ptr Window
@@ -166,7 +186,22 @@ proc buildUi*(): UiRefs =
     invoke: stackNewShortcut, cp: stackCp))
   windowRegisterShortcut(result.window, Shortcut(
     code: int(KEYCODE_LETTER('Q')), alt: true,
-    invoke: stackKillFocusedShortcut, cp: stackCp))
+    invoke: altQDispatch, cp: stackCp))
+  windowRegisterShortcut(result.window, Shortcut(
+    code: int(KEYCODE_LETTER('W')), alt: true,
+    invoke: paletteJumpCb, cp: nil))
+  windowRegisterShortcut(result.window, Shortcut(
+    code: int(KEYCODE_LETTER('L')), alt: true, shift: true,
+    invoke: tabNextCb, cp: nil))
+  windowRegisterShortcut(result.window, Shortcut(
+    code: int(KEYCODE_LETTER('H')), alt: true, shift: true,
+    invoke: tabPrevCb, cp: nil))
+  windowRegisterShortcut(result.window, Shortcut(
+    code: int(KEYCODE_RIGHT), alt: true, shift: true,
+    invoke: tabNextCb, cp: nil))
+  windowRegisterShortcut(result.window, Shortcut(
+    code: int(KEYCODE_LEFT), alt: true, shift: true,
+    invoke: tabPrevCb, cp: nil))
 
   startPump(result.window)
 

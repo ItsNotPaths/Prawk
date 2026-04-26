@@ -1,5 +1,5 @@
 import std/strutils
-import luigi, commands, config, clshell, font
+import luigi, commands, config, clshell, font, theme
 
 type
   MenuOption = object
@@ -118,9 +118,20 @@ proc rebuildFileOptions(mb: ptr Menubar) =
     for p in recents:
       mb.items[0].options.add(mkOption(p, "editor.open", @[p]))
 
+proc rebuildViewOptions(mb: ptr Menubar) =
+  mb.items[2].options = @[
+    mkOption("Toggle Sidebar"),
+    mkOption("Toggle Fullscreen"),
+    mkOption("--- Themes ---"),
+  ]
+  for n in theme.themeNames():
+    let label = if n == theme.activeTheme: "* " & n else: "  " & n
+    mb.items[2].options.add(mkOption(label, "theme", @[n]))
+
 proc spawnMenu(mb: ptr Menubar, idx: int) =
   if idx < 0 or idx >= mb.items.len: return
   if idx == 0: rebuildFileOptions(mb)
+  if idx == 2: rebuildViewOptions(mb)
   if mb.items[idx].options.len == 0: return
   # Override-redirect popups don't take X11 keyboard focus on tiling WMs,
   # so keep the main window focused and route keys through the menubar.
@@ -319,10 +330,9 @@ proc menubarCreate*(parent: ptr Element, flags: uint32 = 0): ptr Menubar =
     mkOption("Undo"),
     mkOption("Redo"),
   ])
-  mb.items[2] = MenuItem(label: cstring"View", options: @[
-    mkOption("Toggle Sidebar"),
-    mkOption("Toggle Fullscreen"),
-  ])
+  # View options are built lazily by rebuildViewOptions on each spawn so the
+  # active-theme marker stays accurate after :theme changes the selection.
+  mb.items[2] = MenuItem(label: cstring"View")
   mb.hovered = -1
   theMenubar = mb
   commands.openPaletteWithCb = proc(text: string) = openPaletteWith(text)

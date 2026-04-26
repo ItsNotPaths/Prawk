@@ -1,5 +1,5 @@
 import std/os
-import ui, theme, font, project, commands, config
+import ui, theme, font, project, commands, config, highlight
 
 proc resolveArgv() =
   if paramCount() == 0:
@@ -16,9 +16,11 @@ proc resolveArgv() =
     project.startFile = absolutePath(arg)
 
 initialise()
-loadTheme()
-loadFont()
 config.loadConfig()
+theme.activeTheme = config.themePref
+loadInitialTheme()
+loadFont()
+highlight.loadAllSyntaxes()
 resolveArgv()
 registerBuiltins()
 let refs = buildUi()

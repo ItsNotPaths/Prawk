@@ -73,7 +73,7 @@ proc helpRowText(s: pointer, i: int): string {.nimcall.} =
 
 proc helpOnSelect(s: pointer, i: int) {.nimcall.} =
   if i < 0 or i >= commands.registry.len: return
-  openPaletteWith(":" & commands.registry[i].name & " ")
+  openPaletteWith(commands.registry[i].name & " ")
 
 proc helpProvider*(): Provider =
   Provider(

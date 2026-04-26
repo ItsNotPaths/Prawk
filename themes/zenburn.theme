@@ -1,0 +1,16 @@
+# Zenburn-ish — soft, low-contrast classic
+bg:            #3f3f3f
+fg:            #dcdccc
+accent:        #8cd0d3
+muted:         #7f9f7f
+urgent:        #cc9393
+border_light:  #494949
+border_dark:   #2b2b2b
+separator:     #5b5b5b
+code_keyword:  #f0dfaf
+code_string:   #cc9393
+code_comment:  #7f9f7f
+code_number:   #8cd0d3
+code_operator: #dcdccc
+code_type:        #8cd0d3
+code_return_type: #93e0e3

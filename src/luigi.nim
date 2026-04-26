@@ -52,6 +52,7 @@ const
   WINDOW_MENU*       = uint32(1) shl 0
 
   ALIGN_LEFT*        = cint(1)
+  ALIGN_RIGHT*       = cint(2)
   ALIGN_CENTER*      = cint(3)
 
 # Linux luigi sets these from XK_* keysym values; freed at link time.
@@ -64,6 +65,7 @@ let
   KEYCODE_ENTER*     {.importc: "UI_KEYCODE_ENTER",     lH.}: cint
   KEYCODE_ESCAPE*    {.importc: "UI_KEYCODE_ESCAPE",    lH.}: cint
   KEYCODE_HOME*      {.importc: "UI_KEYCODE_HOME",      lH.}: cint
+  KEYCODE_INSERT*    {.importc: "UI_KEYCODE_INSERT",    lH.}: cint
   KEYCODE_LEFT*      {.importc: "UI_KEYCODE_LEFT",      lH.}: cint
   KEYCODE_RIGHT*     {.importc: "UI_KEYCODE_RIGHT",     lH.}: cint
   KEYCODE_TAB*       {.importc: "UI_KEYCODE_TAB",       lH.}: cint

@@ -1,0 +1,17 @@
+# Gruvbox Material Dark — sourced from sainnhe's Sublime Text scheme
+# (Gruvbox Material Theme.sublime-package -> Gruvbox Material Dark.sublime-color-scheme)
+bg:            #292828
+fg:            #d4be98
+accent:        #9253be
+muted:         #928374
+urgent:        #ea6962
+border_light:  #504945
+border_dark:   #32302f
+separator:     #45403d
+code_keyword:  #d3869b
+code_string:   #d8a657
+code_comment:  #928374
+code_number:   #d3869b
+code_operator: #e78a4e
+code_type:        #a9b665
+code_return_type: #89b482
