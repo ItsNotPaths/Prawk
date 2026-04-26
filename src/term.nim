@@ -2,6 +2,9 @@ import std/[os, strutils]
 import posix
 import luigi
 import pty, project, font, config, clipboard
+when defined(termDebug):
+  import termdebug
+  export termdebug.ParserState
 
 {.compile: "../vendor/libtmt/tmt.c".}
 {.passC: "-I\"" & (currentSourcePath.parentDir.parentDir / "vendor" / "libtmt") & "\"".}
@@ -46,6 +49,20 @@ type
     selAnchorR, selAnchorC: int
     selEndR, selEndC: int
     hasSel: bool
+    cursorVisible*: bool
+    when defined(termDebug):
+      dbgParser*: ParserState
+
+# tmt_msg_t enum values, mirrored from tmt.h.
+const
+  TMT_MSG_CURSOR = cint(4)
+
+proc tmtCallback(m: cint, vt: ptr TMT, a: pointer, p: pointer) {.cdecl.} =
+  let t = cast[ptr Terminal](p)
+  if t == nil: return
+  if m == TMT_MSG_CURSOR and a != nil:
+    let s = cast[cstring](a)
+    t.cursorVisible = (s[0] == 't')
 
 var allTerminals*: seq[ptr Terminal]
 
@@ -150,6 +167,9 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
     let by = t.e.bounds.t
     var buf: array[2, char]
     buf[1] = '\0'
+    let drawCursor = t.cursorVisible and
+                     element.window != nil and
+                     element.window.focused == element
     for r in 0 ..< int(scr.nline):
       let line = scr.lines[r]
       for col in 0 ..< int(scr.ncol):
@@ -159,17 +179,22 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
         var fg = colorOf(cell.a.fg, true)
         var bg = colorOf(cell.a.bg, false)
         if cell.a.reverse: swap(fg, bg)
-        if int(cur.r) == r and int(cur.c) == col: swap(fg, bg)
+        if drawCursor and int(cur.r) == r and int(cur.c) == col:
+          swap(fg, bg)
         if inSel(t, r, col):
           bg = ui.theme.selected
         drawBlock(painter, Rectangle(l: x, r: x + gW, t: y, b: y + gH), bg)
-        var ch = cell.c
-        if ch < 32 or ch > 126: ch = 32
-        buf[0] = char(ch)
-        drawString(painter,
-          Rectangle(l: x, r: x + gW, t: y, b: y + gH),
-          cast[cstring](addr buf[0]), 1,
-          fg, cint(ALIGN_LEFT), nil)
+        let ch = cell.c
+        if ch <= 32 or ch == 0x7F:
+          discard  # blank cell
+        elif ch <= 126:
+          buf[0] = char(ch)
+          drawString(painter,
+            Rectangle(l: x, r: x + gW, t: y, b: y + gH),
+            cast[cstring](addr buf[0]), 1,
+            fg, cint(ALIGN_LEFT), nil)
+        else:
+          drawGlyphCp(painter, x, y, ch, fg)
     if element.window != nil and element.window.focused == element:
       let b = t.e.bounds
       drawBorder(painter, b, 0x9253be'u32, Rectangle(l: 2, r: 2, t: 2, b: 2))
@@ -316,8 +341,11 @@ proc terminalCreate*(parent: ptr Element, flags: uint32 = 0): ptr Terminal =
                         terminalMessage, "Terminal")
   let t = cast[ptr Terminal](e)
   t.rows = 24; t.cols = 80
-  t.vt = tmt_open(csize_t(t.rows), csize_t(t.cols), nil, nil, nil)
-  let (fd, pid) = startShell(t.rows, t.cols, project.projectRoot)
+  t.cursorVisible = true
+  t.vt = tmt_open(csize_t(t.rows), csize_t(t.cols),
+                  cast[pointer](tmtCallback), cast[pointer](t), nil)
+  let (fd, pid) = startShell(t.rows, t.cols, project.projectRoot,
+                             config.terminalTerm)
   t.ptyFd = fd
   t.pid = pid
   allTerminals.add(t)
@@ -344,12 +372,37 @@ proc termRefreshCwd*(t: ptr Terminal) =
   except OSError, IOError:
     discard
 
+when defined(termDebug):
+  proc terminalIndex*(t: ptr Terminal): int =
+    for i, p in allTerminals:
+      if p == t: return i
+    -1
+
 proc drainAll*() =
   for t in allTerminals:
     if t.ptyFd < 0 or t.vt == nil: continue
     while true:
       let n = read(t.ptyFd, addr t.readBuf[0], t.readBuf.len)
       if n <= 0: break
+      when defined(termDebug):
+        dbgRecordRead(terminalIndex(t), t.dbgParser,
+                      addr t.readBuf[0], n.int)
       tmt_write(t.vt, cast[cstring](addr t.readBuf[0]), csize_t(n))
       elementRepaint(addr t.e, nil)
       if n < t.readBuf.len: break
+
+when defined(termDebug):
+  proc termDebugDump*(t: ptr Terminal) =
+    if t == nil or t.vt == nil: return
+    let scr = tmt_screen(t.vt)
+    let cur = tmt_cursor(t.vt)
+    let nrow = int(scr.nline)
+    let ncol = int(scr.ncol)
+    let cellAt = proc(r, c: int): int32 =
+      if r < 0 or r >= nrow or c < 0 or c >= ncol: return 0'i32
+      int32(scr.lines[r].chars[c].c)
+    let reverseAt = proc(r, c: int): bool =
+      if r < 0 or r >= nrow or c < 0 or c >= ncol: return false
+      scr.lines[r].chars[c].a.reverse
+    dbgDumpGrid(terminalIndex(t), nrow, ncol,
+                int(cur.r), int(cur.c), cellAt, reverseAt)

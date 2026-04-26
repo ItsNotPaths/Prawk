@@ -37,9 +37,28 @@ if [ $DO_LOCAL -eq 0 ] && [ $DO_PUBLIC -eq 0 ]; then
     exit 1
 fi
 
+apply_vendor_patches() {
+    local vendor="$PROJECT_DIR/vendor"
+    local patch="$PROJECT_DIR/patches/libtmt-prawk.patch"
+    [ -f "$patch" ] || return 0
+    [ -d "$vendor/libtmt" ] || return 0
+    if (cd "$vendor/libtmt" && git apply --check --reverse "$patch" >/dev/null 2>&1); then
+        return 0  # already applied
+    fi
+    if (cd "$vendor/libtmt" && git apply --check "$patch" >/dev/null 2>&1); then
+        echo "==> applying libtmt-prawk patch"
+        (cd "$vendor/libtmt" && git apply "$patch")
+    else
+        echo "error: libtmt-prawk patch neither applies nor is already applied" >&2
+        exit 1
+    fi
+}
+
 if [ $DO_LOCAL -eq 1 ]; then
     echo "==> Local build: $PROJECT_NAME -> $RELEASE_DIR"
     mkdir -p "$RELEASE_DIR"
+
+    apply_vendor_patches
 
     BIN="$RELEASE_DIR/$PROJECT_NAME"
     ( cd "$PROJECT_DIR" && \

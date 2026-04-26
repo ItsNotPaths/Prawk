@@ -3,6 +3,19 @@ import posix
 
 {.passL: "-lutil".}
 
+proc setlocale(category: cint, locale: cstring): cstring
+  {.importc, header: "<locale.h>", discardable.}
+const LC_CTYPE = cint(0)
+
+# Without this, libtmt's mbrtowc runs in the C locale and treats each byte of
+# a UTF-8 sequence as its own cell — multibyte glyphs eat 2-4 columns and the
+# whole line shifts. Called once on first PTY spawn.
+var localeInited = false
+proc ensureUtf8Locale() =
+  if localeInited: return
+  localeInited = true
+  setlocale(LC_CTYPE, "")
+
 type WinSize {.importc: "struct winsize", header: "<sys/ioctl.h>", bycopy.} = object
   ws_row: cushort
   ws_col: cushort
@@ -21,6 +34,7 @@ proc setNonBlocking(fd: cint) =
 
 proc startShell*(rows, cols: int, workDir: string = "",
                  term: string = "ansi"): tuple[fd: cint, pid: Pid] =
+  ensureUtf8Locale()
   var ws = WinSize(ws_row: rows.cushort, ws_col: cols.cushort)
   var fd: cint = -1
   let pid = forkpty(addr fd, nil, nil, addr ws)
@@ -32,6 +46,8 @@ proc startShell*(rows, cols: int, workDir: string = "",
       discard chdir(workDir.cstring)
     let shell = getEnv("SHELL", "/bin/sh")
     putEnv("TERM", term)
+    # Match alacritty's env for TUIs that key off COLORTERM (claude does).
+    putEnv("COLORTERM", "truecolor")
     var argv = allocCStringArray([shell, "-i"])
     discard execvp(shell.cstring, argv)
     quit(1)

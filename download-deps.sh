@@ -57,5 +57,22 @@ else
     echo "  done."
 fi
 
+# prawk's libtmt extensions: pending-wrap, DECSTBM scroll regions, OSC absorb,
+# CSI catchall, autowrap (?7), Unicode locale init. Applied to the cloned vendor
+# tree at build time so vendor/ stays clean and others can re-clone freely.
+PATCH="$(cd "$(dirname "$0")" && pwd)/patches/libtmt-prawk.patch"
+if [ -f "$PATCH" ]; then
+    if (cd "$VENDOR/libtmt" && git apply --check --reverse "$PATCH" >/dev/null 2>&1); then
+        echo "==> libtmt-prawk patch already applied"
+    elif (cd "$VENDOR/libtmt" && git apply --check "$PATCH" >/dev/null 2>&1); then
+        echo "==> applying libtmt-prawk patch"
+        (cd "$VENDOR/libtmt" && git apply "$PATCH")
+    else
+        echo "error: libtmt-prawk patch neither applies cleanly nor is already" >&2
+        echo "       applied — vendor/libtmt may be on an unexpected commit." >&2
+        exit 1
+    fi
+fi
+
 echo ""
 echo "All deps ready."

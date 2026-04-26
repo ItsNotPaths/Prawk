@@ -244,6 +244,11 @@ proc drawStringHighlighted*(p: ptr Painter; r: Rectangle; s: cstring;
 proc measureStringWidth*(s: cstring; bytes: int = -1): cint
                   {.cdecl, lH, importc: "UIMeasureStringWidth".}
 
+# prawk: draws an arbitrary codepoint via FreeType (no glyph cache). Used for
+# the terminal cells with non-ASCII chars; luigi's UIDrawGlyph clamps to 0-127.
+proc drawGlyphCp*(p: ptr Painter; x, y: cint; cp: cint; color: uint32)
+                  {.cdecl, importc: "prawk_draw_glyph_cp".}
+
 proc fontCreate*(cPath: cstring; size: uint32): ptr Font
                   {.cdecl, lH, importc: "UIFontCreate".}
 proc fontActivate*(font: ptr Font): ptr Font

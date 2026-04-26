@@ -10,9 +10,12 @@ var
   termHostEl: ptr Element
   termStackRef: ptr TerminalStack
 
-proc log(msg: string) =
-  try: stderr.writeLine("[prawk] " & msg); stderr.flushFile()
-  except IOError: discard
+when defined(termDebug):
+  proc log(msg: string) =
+    try: stderr.writeLine("[prawk] " & msg); stderr.flushFile()
+    except IOError: discard
+else:
+  template log(msg: untyped) = discard
 
 proc isInTermStack(e: ptr Element): bool =
   if termHostEl == nil or e == nil: return false

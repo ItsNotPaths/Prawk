@@ -12,9 +12,12 @@ proc monoNs(): int64 =
   clock_gettime(CLOCK_MONOTONIC, addr ts)
   int64(ts.tv_sec) * 1_000_000_000 + int64(ts.tv_nsec)
 
-proc clLog(msg: string) =
-  try: stderr.writeLine("[cl] " & msg); stderr.flushFile()
-  except IOError: discard
+when defined(termDebug):
+  proc clLog(msg: string) =
+    try: stderr.writeLine("[cl] " & msg); stderr.flushFile()
+    except IOError: discard
+else:
+  template clLog(msg: untyped) = discard
 
 type
   GrepHit* = object

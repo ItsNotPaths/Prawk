@@ -20,6 +20,7 @@ var
   clearOnProjectCd*: bool = false
   terminalCopyPaste*: TerminalCopyPaste = tcpIde
   minimapEnabled*: bool = true
+  terminalTerm*: string = "alacritty"
 
 proc tildify*(p: string): string =
   let h = getHomeDir()
@@ -105,6 +106,8 @@ proc loadConfig*() =
       of "on", "true", "yes", "1":   minimapEnabled = true
       of "off", "false", "no", "0":  minimapEnabled = false
       else: discard
+    of "terminal_term":
+      if val.len > 0: terminalTerm = val
     else: discard
 
 proc setConfigKey*(key, val: string) =
