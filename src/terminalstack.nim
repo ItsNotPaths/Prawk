@@ -11,23 +11,28 @@ type
 var theTermStack*: ptr TerminalStack
 
 const
-  headerPadX: cint = 6
-  headerPadY: cint = 3
+  titlePadX: cint = 6
+  titlePadY: cint = 2
   minTerminalRows = 6
 
-proc headerHeight(): cint =
+proc titleHeight(): cint =
   let (_, gH) = glyphDims()
-  gH + 2 * headerPadY
+  gH + 2 * titlePadY
 
 proc minPerHeight(): cint =
   let (_, gH) = glyphDims()
-  gH * cint(minTerminalRows)
+  gH * cint(minTerminalRows) + titleHeight()
+
+proc baseLabel(s: ptr TerminalStack, i: int): string =
+  let t = s.terms[i]
+  if t != nil and t.name.len > 0: t.name
+  else: "t" & $(i + 1)
 
 proc stackTerminalLabel*(s: ptr TerminalStack, i: int): string =
   if s == nil or i < 0 or i >= s.terms.len: return ""
   let t = s.terms[i]
-  if t != nil and t.name.len > 0: t.name
-  else: "t" & $(i + 1)
+  let base = baseLabel(s, i)
+  if t != nil and t.locked: "*" & base else: base
 
 proc stackPersist*(s: ptr TerminalStack) =
   if s == nil: return
@@ -39,9 +44,10 @@ proc stackPersist*(s: ptr TerminalStack) =
 proc layoutTerminals(s: ptr TerminalStack) =
   if s == nil or s.terms.len == 0: return
   let n = s.terms.len
+  let tH = titleHeight()
   let bx0 = s.e.bounds.l
   let bx1 = s.e.bounds.r
-  let by0 = s.e.bounds.t + headerHeight()
+  let by0 = s.e.bounds.t
   let by1 = s.e.bounds.b
   let availH = max(cint(0), by1 - by0)
   let mh = minPerHeight()
@@ -55,43 +61,9 @@ proc layoutTerminals(s: ptr TerminalStack) =
   for i in 0 ..< n:
     let t = s.terms[i]
     if t == nil: continue
-    let top = y0 + cint(i) * perH
-    let bot = top + perH
+    let top = y0 + cint(i) * perH + tH       # leave gap above for title bar
+    let bot = y0 + cint(i + 1) * perH
     elementMove(addr t.e, Rectangle(l: bx0, r: bx1, t: top, b: bot), false)
-
-proc paintHeader(s: ptr TerminalStack, painter: ptr Painter) =
-  let (gW, _) = glyphDims()
-  let hH = headerHeight()
-  let hRect = Rectangle(l: s.e.bounds.l, r: s.e.bounds.r,
-                        t: s.e.bounds.t, b: s.e.bounds.t + hH)
-  drawBlock(painter, hRect, ui.theme.panel2)
-  var x: cint = s.e.bounds.l + headerPadX
-  for i in 0 ..< s.terms.len:
-    let label = stackTerminalLabel(s, i)
-    let textW = if label.len > 0: cint(label.len) * gW else: gW
-    let w = textW + 2 * headerPadX
-    if x + w > s.e.bounds.r: break
-    let isFocused = (i == s.focusIdx)
-    let bg = if isFocused: ui.theme.selected else: ui.theme.panel2
-    let fg = if isFocused: ui.theme.textSelected else: ui.theme.text
-    let cell = Rectangle(l: x, r: x + w,
-                         t: s.e.bounds.t + 1, b: s.e.bounds.t + hH - 1)
-    drawBlock(painter, cell, bg)
-    if label.len > 0:
-      drawString(painter, cell, label.cstring, label.len, fg,
-                 cint(ALIGN_CENTER), nil)
-    x += w + 2
-
-proc headerHitIdx(s: ptr TerminalStack, localX: cint): int =
-  let (gW, _) = glyphDims()
-  var x: cint = headerPadX
-  for i in 0 ..< s.terms.len:
-    let label = stackTerminalLabel(s, i)
-    let textW = if label.len > 0: cint(label.len) * gW else: gW
-    let w = textW + 2 * headerPadX
-    if localX >= x and localX < x + w: return i
-    x += w + 2
-  -1
 
 proc stackFocusedTerminal*(s: ptr TerminalStack): ptr Terminal =
   if s == nil or s.terms.len == 0: return nil
@@ -128,7 +100,32 @@ proc stackMessage(element: ptr Element, message: Message,
   if message == msgPaint:
     let painter = cast[ptr Painter](dp)
     drawBlock(painter, element.bounds, ui.theme.panel1)
-    paintHeader(s, painter)
+    let tH = titleHeight()
+    for i in 0 ..< s.terms.len:
+      let t = s.terms[i]
+      if t == nil: continue
+      let body = t.e.bounds       # already shrunk by tH at top
+      let titleR = Rectangle(l: body.l, r: body.r,
+                             t: body.t - tH, b: body.t)
+      if titleR.b <= element.bounds.t or titleR.t >= element.bounds.b:
+        continue
+      drawBlock(painter, titleR, ui.theme.panel2)
+      termRefreshCwd(t)
+      let lock = if t.locked: "*" else: " "
+      let where = if t.cwd.len > 0: tildify(t.cwd) else: ""
+      let label = lock & " " & baseLabel(s, i) & "  " & where
+      let tr = Rectangle(l: titleR.l + titlePadX, r: titleR.r - titlePadX,
+                         t: titleR.t, b: titleR.b)
+      let fg =
+        if t.locked: ui.theme.selected
+        elif i == s.focusIdx: ui.theme.text
+        else: ui.theme.textDisabled
+      drawString(painter, tr, label.cstring, label.len, fg,
+                 cint(ALIGN_LEFT), nil)
+      drawBlock(painter,
+                Rectangle(l: titleR.l, r: titleR.r,
+                          t: titleR.b - 1, b: titleR.b),
+                ui.theme.border)
     return 0    # 0 so children still paint
 
   elif message == msgLayout:
@@ -141,14 +138,18 @@ proc stackMessage(element: ptr Element, message: Message,
     return 1
 
   elif message == msgLeftDown:
+    # Click on a per-terminal title bar focuses that terminal.
     let w = element.window
     if w == nil: return 0
-    let ly = w.cursorY - element.bounds.t
-    if ly >= 0 and ly < headerHeight():
-      let lx = w.cursorX - element.bounds.l
-      let hit = headerHitIdx(s, lx)
-      if hit >= 0:
-        stackFocusAt(s, hit)
+    let cy = w.cursorY
+    let tH = titleHeight()
+    for i in 0 ..< s.terms.len:
+      let t = s.terms[i]
+      if t == nil: continue
+      let body = t.e.bounds
+      let titleTop = body.t - tH
+      if cy >= titleTop and cy < body.t:
+        stackFocusAt(s, i)
         return 1
     return 0
 
@@ -193,11 +194,26 @@ proc stackNameAt*(s: ptr TerminalStack, idx: int, name: string) =
 
 proc stackProjectChanged*(s: ptr TerminalStack) =
   ## Per design.md: existing terminals re-CD to new project root,
-  ## processes preserved if running, otherwise fresh prompts.
+  ## processes preserved if running, otherwise fresh prompts. With
+  ## `clear_on_project_cd: true` they also receive a `clear` to scrub
+  ## scrollback from the previous project. Locked terminals are skipped
+  ## entirely — they keep whatever cwd / process they had.
   if s == nil or project.projectRoot.len == 0: return
-  let cmd = "cd " & quoteShell(project.projectRoot)
+  let cmd =
+    if config.clearOnProjectCd:
+      "cd " & quoteShell(project.projectRoot) & " && clear"
+    else:
+      "cd " & quoteShell(project.projectRoot)
   for t in s.terms:
+    if t == nil or t.locked: continue
     termRunCmd(t, cmd)
+
+proc stackLockToggle*(s: ptr TerminalStack, idx: int) =
+  if s == nil or idx < 0 or idx >= s.terms.len: return
+  let t = s.terms[idx]
+  if t == nil: return
+  t.locked = not t.locked
+  elementRepaint(addr s.e, nil)
 
 proc stackInstall*(s: ptr TerminalStack) =
   ## Wire project-change broadcast and persist on changes.

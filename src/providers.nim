@@ -1,4 +1,3 @@
-import std/[os, strutils]
 import luigi, resultspane, commands, menubar, config
 
 type

@@ -1,5 +1,5 @@
 import std/strutils
-import luigi, commands, config, clshell, font, theme
+import luigi, commands, config, clshell, font, theme, clipboard
 
 type
   MenuOption = object
@@ -271,6 +271,25 @@ proc menubarMessage(element: ptr Element, message: Message, di: cint, dp: pointe
     if not mb.palette: return 0
     let k = cast[ptr KeyTyped](dp)
     let code = k.code
+    let win = element.window
+    let ctrl  = (win != nil and win.ctrl)
+    let shift = (win != nil and win.shift)
+    if ctrl and code == int(KEYCODE_LETTER('C')):
+      if shift:
+        clShellInterrupt()
+      # else: stub copy
+      return 1
+    if ctrl and code == int(KEYCODE_LETTER('V')):
+      let txt = clipboardGet()
+      if txt.len > 0:
+        # Single-line paste only — newlines in the palette would just look
+        # like garbage in a one-line prompt. Stop at the first \n.
+        let nl = txt.find('\n')
+        let body = if nl >= 0: txt[0 ..< nl] else: txt
+        if body.len > 0:
+          mb.palBuf.add(body)
+          elementRepaint(element, nil)
+      return 1
     if code == int(KEYCODE_ESCAPE):
       exitPalette(mb); return 1
     if code == int(KEYCODE_ENTER):

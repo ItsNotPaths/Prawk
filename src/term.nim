@@ -1,7 +1,7 @@
 import std/os
 import posix
 import luigi
-import pty, project, font
+import pty, project, font, config, clipboard
 
 {.compile: "../vendor/libtmt/tmt.c".}
 {.passC: "-I\"" & (currentSourcePath.parentDir.parentDir / "vendor" / "libtmt") & "\"".}
@@ -36,10 +36,12 @@ type
   Terminal* = object
     e*: Element
     name*: string
+    locked*: bool
+    cwd*: string
     rows, cols: int
     vt: ptr TMT
     ptyFd*: cint
-    pid: Pid
+    pid*: Pid
     readBuf: array[4096, char]
 
 var allTerminals*: seq[ptr Terminal]
@@ -123,8 +125,37 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
     if t.ptyFd < 0: return 0
     let w = element.window
     if w != nil and w.alt: return 0
-    var seqStr: string = ""
+    let ctrl  = (w != nil and w.ctrl)
+    let shift = (w != nil and w.shift)
     let code = k.code
+
+    # --- IDE / legacy copy-paste remap ----------------------------------
+    if ctrl and code == int(KEYCODE_LETTER('C')):
+      case config.terminalCopyPaste
+      of tcpIde:
+        if shift:
+          if t.pid > 0: discard kill(t.pid, SIGINT)
+        # else: Ctrl+C = stub copy until selection lands.
+        return 1
+      of tcpLegacy:
+        if shift: return 1   # Ctrl+Shift+C = stub copy
+        # Plain Ctrl+C falls through to PTY pass-through below (SIGINT).
+    if ctrl and code == int(KEYCODE_LETTER('V')):
+      case config.terminalCopyPaste
+      of tcpIde:
+        let txt = clipboardGet()
+        if txt.len > 0:
+          discard write(t.ptyFd, txt.cstring, txt.len)
+        return 1
+      of tcpLegacy:
+        if shift:
+          let txt = clipboardGet()
+          if txt.len > 0:
+            discard write(t.ptyFd, txt.cstring, txt.len)
+          return 1
+        # Plain Ctrl+V falls through (literal-quote in some apps).
+
+    var seqStr: string = ""
     if code == int(KEYCODE_LEFT):        seqStr = "\x1b[D"
     elif code == int(KEYCODE_RIGHT):     seqStr = "\x1b[C"
     elif code == int(KEYCODE_UP):        seqStr = "\x1b[A"
@@ -180,6 +211,16 @@ proc termRunCmd*(t: ptr Terminal, line: string) =
   if t == nil or t.ptyFd < 0 or line.len == 0: return
   let payload = line & "\n"
   discard write(t.ptyFd, payload.cstring, payload.len)
+
+proc termRefreshCwd*(t: ptr Terminal) =
+  ## Cheap readlink on /proc/<pid>/cwd. Updates the cached cwd for the
+  ## per-terminal title bar. No-op if the proc is gone.
+  if t == nil or t.pid <= 0: return
+  let p = "/proc/" & $cint(t.pid) & "/cwd"
+  try:
+    t.cwd = expandSymlink(p)
+  except OSError, IOError:
+    discard
 
 proc drainAll*() =
   for t in allTerminals:

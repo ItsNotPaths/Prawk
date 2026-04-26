@@ -77,16 +77,17 @@ proc cmdTabPrev(args: seq[string]) =
   if editor.theEditor != nil: editorTabPrev(editor.theEditor)
 
 proc cmdTabClose(args: seq[string]) =
+  ## 1-based idx to match the strip's visual order.
   if editor.theEditor == nil: return
   let ed = editor.theEditor
   var idx = editorActiveIdx(ed)
   if args.len >= 1:
-    try: idx = parseInt(args[0])
+    try: idx = parseInt(args[0]) - 1
     except ValueError: return
   if idx < 0 or idx >= editorTabCount(ed): return
   if editorTabIsDirty(ed, idx):
     if openPaletteWithCb != nil:
-      openPaletteWithCb("tab.close.force " & $idx)
+      openPaletteWithCb("tab.close.force " & $(idx + 1))
     return
   editorCloseTab(ed, idx)
 
@@ -95,7 +96,7 @@ proc cmdTabCloseForce(args: seq[string]) =
   let ed = editor.theEditor
   var idx = editorActiveIdx(ed)
   if args.len >= 1:
-    try: idx = parseInt(args[0])
+    try: idx = parseInt(args[0]) - 1
     except ValueError: return
   editorTabCloseForce(ed, idx)
 
@@ -108,9 +109,10 @@ proc cmdTermNew(args: seq[string]) =
     stackPersist(theTermStack)
 
 proc cmdTermKill(args: seq[string]) =
+  ## 1-based idx to match the t1/t2/... title bars.
   if theTermStack == nil or args.len < 1: return
   var idx = -1
-  try: idx = parseInt(args[0])
+  try: idx = parseInt(args[0]) - 1
   except ValueError: return
   if idx < 0 or idx >= theTermStack.terms.len: return
   stackKillAt(theTermStack, idx)
@@ -119,11 +121,21 @@ proc cmdTermKill(args: seq[string]) =
 proc cmdTermName(args: seq[string]) =
   if theTermStack == nil or args.len < 2: return
   var idx = -1
-  try: idx = parseInt(args[0])
+  try: idx = parseInt(args[0]) - 1
   except ValueError: return
   if idx < 0 or idx >= theTermStack.terms.len: return
   stackNameAt(theTermStack, idx, args[1])
   stackPersist(theTermStack)
+
+proc cmdLock(args: seq[string]) =
+  if theTermStack == nil or args.len < 1: return
+  var s = args[0].strip()
+  if s.len == 0: return
+  if s[0] in {'t', 'T'} and s.len > 1: s = s[1 .. ^1]
+  var idx = -1
+  try: idx = parseInt(s) - 1
+  except ValueError: return
+  stackLockToggle(theTermStack, idx)
 
 proc cmdTheme(args: seq[string]) =
   if args.len < 1: return
@@ -141,6 +153,8 @@ proc registerBuiltins*() =
   registerCommand("term.new", cmdTermNew)
   registerCommand("term.kill", cmdTermKill)
   registerCommand("term.name", cmdTermName)
+  registerCommand("lock", cmdLock)
+  registerCommand("termlock", cmdLock)
   registerCommand("theme", cmdTheme)
   registerCommand("jump", cmdJump)
   registerCommand("j", cmdJump)

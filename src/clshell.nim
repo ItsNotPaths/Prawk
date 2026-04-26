@@ -544,6 +544,12 @@ proc clDispatch*(line: string) =
 
 # ---------- install ----------
 
+proc clShellInterrupt*() =
+  ## SIGINT to the dedicated CL shell's foreground process group, mirroring
+  ## what Ctrl+C in a real terminal would do. No-op when nothing's running.
+  if theClShell.pid > 0 and theClShell.state != crIdle:
+    discard kill(theClShell.pid, SIGINT)
+
 proc cmdGrep(args: seq[string]) =
   ## :grep <pattern> — strips any leading flag tokens (anything starting
   ## with `-`) and substitutes our own (`grep -rn --color=never`). User's
@@ -570,6 +576,7 @@ proc clShellInstall*(pane: ptr ResultsPane) =
   theClPane = pane
   commands.clDispatchCb = proc(line: string) = clDispatch(line)
   registerCommand("cl", proc(args: seq[string]) = swapTo(clProvider()))
+  registerCommand("cl.interrupt", proc(args: seq[string]) = clShellInterrupt())
   registerCommand("grep", cmdGrep)
   # Hijack `ls` → `files`. Registry runs before the shell fall-through, so
   # typing `ls` (with or without args) lands on the tree provider instead.

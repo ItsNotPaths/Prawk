@@ -1,4 +1,4 @@
-import luigi, font
+import luigi, font, commands
 
 type
   Provider* = object
@@ -173,6 +173,13 @@ proc paneMessage(element: ptr Element, message: Message, di: cint, dp: pointer):
     let code = k.code
     let ctrl  = (w != nil and w.ctrl)
     let shift = (w != nil and w.shift)
+
+    # Ctrl+Shift+C cancels the CL's running command from anywhere in the
+    # feedback pane (mirrors the menubar palette binding). Plain Ctrl+C is
+    # reserved for stub-copy until pane selection ships.
+    if ctrl and code == int(KEYCODE_LETTER('C')):
+      if shift: discard runCommand("cl.interrupt")
+      return 1
 
     if p.current.onKey != nil and p.current.onKey(p.current.state, code.cint, ctrl, shift):
       followSelection(p)

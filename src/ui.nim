@@ -1,10 +1,11 @@
 import luigi
-import term, pump, editor, menubar, tree, providers, config, resultspane, terminalstack, clshell, project, commands
+import term, pump, editor, editortabs, menubar, tree, providers, config, resultspane, terminalstack, clshell, project, commands
 export luigi, editor, menubar
 
 var
   paneEl: ptr Element
   editorEl: ptr Element
+  tabPaneEl: ptr Element
   termHostEl: ptr Element
   termStackRef: ptr TerminalStack
 
@@ -23,7 +24,7 @@ proc isInTermStack(e: ptr Element): bool =
 proc columnOf(e: ptr Element): int =
   if e == nil: return -1
   if e == paneEl: return 0
-  if e == editorEl: return 1
+  if e == editorEl or (tabPaneEl != nil and e == tabPaneEl): return 1
   if isInTermStack(e): return 2
   -1
 
@@ -86,6 +87,15 @@ proc onWinMsg(element: ptr Element, message: Message, di: cint, dp: pointer): ci
 proc paletteJumpCb(cp: pointer) {.cdecl.} =
   openPaletteWith("jump ")
 
+proc paletteLockCb(cp: pointer) {.cdecl.} =
+  ## Prefill the CL with `lock <focused-term-idx>` (1-based, matching the
+  ## tN title bars) so Enter toggles the lock on the currently focused
+  ## terminal. If no terminals exist, just `lock `.
+  var prefix = "lock "
+  if termStackRef != nil and termStackRef.terms.len > 0:
+    prefix.add($(termStackRef.focusIdx + 1))
+  openPaletteWith(prefix)
+
 proc tabNextCb(cp: pointer) {.cdecl.} =
   if theEditor != nil: editorTabNext(theEditor)
 
@@ -93,9 +103,12 @@ proc tabPrevCb(cp: pointer) {.cdecl.} =
   if theEditor != nil: editorTabPrev(theEditor)
 
 proc altQDispatch(cp: pointer) {.cdecl.} =
-  ## Routes Alt+Q by focused column: editor → close active tab; terminal → kill.
-  if editorEl != nil and editorEl.window != nil and
-     editorEl.window.focused == editorEl:
+  ## Routes Alt+Q by focused column: editor (body or tab strip) → close active
+  ## tab; terminal → kill.
+  let win = if editorEl != nil: editorEl.window else: nil
+  let f = if win != nil: win.focused else: nil
+  if f != nil and (f == editorEl or
+                   (tabPaneEl != nil and f == tabPaneEl)):
     discard runCommand("tab.close")
     return
   stackKillFocusedShortcut(cp)
@@ -109,6 +122,8 @@ type UiRefs* = object
   innerSplit*: ptr SplitPane
   pane*: ptr ResultsPane
   gitPane*: ptr Panel
+  editorCol*: ptr Panel
+  editorTabs*: ptr EditorTabs
   editor*: ptr Editor
   termStack*: ptr TerminalStack
 
@@ -135,10 +150,15 @@ proc buildUi*(): UiRefs =
   clShellInit(project.projectRoot)
   clShellInstall(result.pane)
 
-  # innerSplit: editor | terminal-stack
+  # innerSplit: editorCol | terminal-stack
   result.innerSplit = splitPaneCreate(addr result.rootSplit.e, 0, 0.65)
 
-  result.editor = editorCreate(addr result.innerSplit.e)
+  # editorCol: tab strip on top + editor body underneath, stacked vertically.
+  result.editorCol = panelCreate(addr result.innerSplit.e, PANEL_GRAY or PANEL_EXPAND)
+  result.editorTabs = editorTabsCreate(addr result.editorCol.e)
+  result.editor = editorCreate(addr result.editorCol.e,
+                               ELEMENT_V_FILL or ELEMENT_H_FILL)
+
   result.termStack = stackCreate(addr result.innerSplit.e)
   stackInstall(result.termStack)
 
@@ -152,6 +172,7 @@ proc buildUi*(): UiRefs =
 
   paneEl       = addr result.pane.e
   editorEl     = addr result.editor.e
+  tabPaneEl    = addr result.editorTabs.e
   termHostEl   = addr result.termStack.e
   termStackRef = result.termStack
 
@@ -202,6 +223,9 @@ proc buildUi*(): UiRefs =
   windowRegisterShortcut(result.window, Shortcut(
     code: int(KEYCODE_LEFT), alt: true, shift: true,
     invoke: tabPrevCb, cp: nil))
+  windowRegisterShortcut(result.window, Shortcut(
+    code: int(KEYCODE_LETTER('P')), alt: true, shift: true,
+    invoke: paletteLockCb, cp: nil))
 
   startPump(result.window)
 

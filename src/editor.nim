@@ -1,5 +1,5 @@
 import std/[os, strutils]
-import luigi, config, font, highlight
+import luigi, config, font, highlight, clipboard
 
 type
   EditorBuf* = object
@@ -22,20 +22,9 @@ type
 var
   theEditor*: ptr Editor
   cursorBlinkOn*: bool = true
+  editorAltUpCb*: proc() {.closure.}   # set by editortabs.nim
 
 template buf(ed: ptr Editor): var EditorBuf = ed.tabs[ed.activeIdx]
-
-const
-  tabPadX: cint = 8
-  tabPadY: cint = 3
-
-proc tabStripHeight(): cint =
-  let (_, gH) = glyphDims()
-  gH + 2 * tabPadY
-
-proc tabLabel(b: EditorBuf): string =
-  let nm = if b.path.len == 0: "[scratch]" else: extractFilename(b.path)
-  if b.dirty: "* " & nm else: nm
 
 proc gutterWidth(ed: ptr Editor): cint =
   if config.lineNumbers == lnmOff: return 0
@@ -78,7 +67,7 @@ proc refreshStates(ed: ptr Editor, throughRow: int) =
 
 proc visibleRows(ed: ptr Editor): int =
   let (_, gH) = glyphDims()
-  let avail = max(0, int(ed.e.bounds.b - ed.e.bounds.t) - int(tabStripHeight()))
+  let avail = max(0, int(ed.e.bounds.b - ed.e.bounds.t))
   max(1, avail div max(1, int(gH)))
 
 proc clampCursor(ed: ptr Editor) =
@@ -251,6 +240,17 @@ proc activeMode*(ed: ptr Editor): CursorMode =
   if ed == nil or ed.tabs.len == 0: cmInsert
   else: ed.tabs[ed.activeIdx].mode
 
+proc editorTabLabel*(ed: ptr Editor, idx: int): string =
+  if ed == nil or idx < 0 or idx >= ed.tabs.len: return ""
+  let b = ed.tabs[idx]
+  let nm = if b.path.len == 0: "[scratch]" else: extractFilename(b.path)
+  if b.dirty: "* " & nm else: nm
+
+proc editorTabSwitch*(ed: ptr Editor, idx: int) =
+  if ed == nil or idx < 0 or idx >= ed.tabs.len: return
+  ed.activeIdx = idx
+  elementRepaint(addr ed.e, nil)
+
 proc editorJumpAbsolute*(ed: ptr Editor, line: int) =
   if ed == nil: return
   ed.buf.cursorRow = line - 1   # 1-based input
@@ -279,42 +279,6 @@ proc editorTabCloseForce*(ed: ptr Editor, idx: int) =
 
 proc editorActiveIdx*(ed: ptr Editor): int =
   if ed == nil: 0 else: ed.activeIdx
-
-proc paintTabStrip(ed: ptr Editor, painter: ptr Painter) =
-  let (gW, _) = glyphDims()
-  let by = ed.e.bounds.t
-  let stripH = tabStripHeight()
-  let stripRect = Rectangle(l: ed.e.bounds.l, r: ed.e.bounds.r,
-                            t: by, b: by + stripH)
-  drawBlock(painter, stripRect, ui.theme.panel2)
-  var x = ed.e.bounds.l
-  for i in 0 ..< ed.tabs.len:
-    let label = tabLabel(ed.tabs[i])
-    let w = cint(label.len) * gW + 2 * tabPadX
-    if x >= ed.e.bounds.r: break
-    let r = Rectangle(l: x, r: min(x + w, ed.e.bounds.r),
-                      t: by, b: by + stripH)
-    let active = (i == ed.activeIdx)
-    let bg = if active: ui.theme.selected else: ui.theme.panel2
-    drawBlock(painter, r, bg)
-    let fg = if active: ui.theme.textSelected else: ui.theme.text
-    drawString(painter, r, label.cstring, label.len, fg, cint(ALIGN_CENTER), nil)
-    x += w
-  # bottom border under strip
-  drawBlock(painter,
-            Rectangle(l: ed.e.bounds.l, r: ed.e.bounds.r,
-                      t: by + stripH - 1, b: by + stripH),
-            ui.theme.border)
-
-proc tabAtX(ed: ptr Editor, lx: cint): int =
-  let (gW, _) = glyphDims()
-  var x: cint = 0
-  for i in 0 ..< ed.tabs.len:
-    let label = tabLabel(ed.tabs[i])
-    let w = cint(label.len) * gW + 2 * tabPadX
-    if lx >= x and lx < x + w: return i
-    x += w
-  -1
 
 proc paintGutter(ed: ptr Editor, painter: ptr Painter,
                  contentTop: cint, gW, gH: cint, vr: int, gutterW: cint) =
@@ -346,10 +310,8 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
     let painter = cast[ptr Painter](dp)
     let (gW, gH) = glyphDims()
     drawBlock(painter, ed.e.bounds, ui.theme.codeBackground)
-    paintTabStrip(ed, painter)
-    let stripH = tabStripHeight()
     let bx = ed.e.bounds.l
-    let by = ed.e.bounds.t + stripH
+    let by = ed.e.bounds.t
     let gutterW = gutterWidth(ed)
     let vr = visibleRows(ed)
     refreshStates(ed, ed.buf.topLine + vr)
@@ -394,6 +356,12 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
     followCursor(ed)
     return 0
 
+  elif message == msgUpdate:
+    # Focus / hover / pressed transitions need a repaint so the focus border
+    # clears when focus moves to the tab pane (or anywhere else).
+    elementRepaint(element, nil)
+    return 0
+
   elif message == msgLeftDown:
     elementFocus(element)
     let (gW, gH) = glyphDims()
@@ -401,18 +369,10 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
     if w != nil:
       let lx = w.cursorX - ed.e.bounds.l
       let ly = w.cursorY - ed.e.bounds.t
-      let stripH = tabStripHeight()
-      if ly >= 0 and ly < stripH:
-        let idx = tabAtX(ed, lx)
-        if idx >= 0 and idx < ed.tabs.len:
-          ed.activeIdx = idx
-          elementRepaint(element, nil)
-        return 1
       let gutterW = gutterWidth(ed)
       let contentLx = lx - gutterW
-      let contentLy = ly - stripH
-      if contentLx < 0 or contentLy < 0: return 1
-      let row = ed.buf.topLine + int(contentLy div max(1, gH))
+      if contentLx < 0 or ly < 0: return 1
+      let row = ed.buf.topLine + int(ly div max(1, gH))
       let col = int(contentLx div max(1, gW))
       ed.buf.cursorRow = row
       ed.buf.cursorCol = col
@@ -439,8 +399,14 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
     clampCursor(ed)
 
     if alt:
-      let isDown = code == int(KEYCODE_LETTER('J')) or code == int(KEYCODE_DOWN)
-      let isUp   = code == int(KEYCODE_LETTER('K')) or code == int(KEYCODE_UP)
+      # Alt+Up jumps focus to the tab pane above the editor.
+      if code == int(KEYCODE_UP):
+        if editorAltUpCb != nil: editorAltUpCb()
+        return 1
+      # Alt+J / Alt+K still jump N lines; arrow aliases dropped so that the
+      # vertical-arrow grammar belongs to pane focus, not buffer motion.
+      let isDown = code == int(KEYCODE_LETTER('J'))
+      let isUp   = code == int(KEYCODE_LETTER('K'))
       if isDown or isUp:
         let n = max(1, config.cursorJumpLines)
         if isDown: ed.buf.cursorRow += n
@@ -475,6 +441,17 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
         killToEnd(ed)
       elif code == int(KEYCODE_LETTER('S')):
         saveCurrent(ed)
+      elif code == int(KEYCODE_LETTER('C')):
+        discard            # stub copy — no editor selection yet
+      elif code == int(KEYCODE_LETTER('V')):
+        let txt = clipboardGet()
+        if txt.len > 0:
+          # Strip trailing newline so single-line clipboard contents don't
+          # split unexpectedly; insert any embedded \n as real newlines.
+          let parts = txt.splitLines()
+          for i, line in parts:
+            if i > 0: insertNewline(ed)
+            if line.len > 0: insertText(ed, line)
       else:
         return 0
       clampCursor(ed)

@@ -5,6 +5,7 @@ type
   FocusTarget* = enum ftTree, ftEditor, ftTerm
   LineNumberMode* = enum lnmOff, lnmGlobal, lnmRelative
   CursorMode* = enum cmInsert, cmNormal
+  TerminalCopyPaste* = enum tcpIde, tcpLegacy
 
 var
   tabMode*: TabMode = tmSpaces4
@@ -16,6 +17,8 @@ var
   cursorJumpLines*: int = 10
   lineNumbers*: LineNumberMode = lnmGlobal
   cursorMode*: CursorMode = cmInsert
+  clearOnProjectCd*: bool = false
+  terminalCopyPaste*: TerminalCopyPaste = tcpIde
 
 proc tildify*(p: string): string =
   let h = getHomeDir()
@@ -85,6 +88,16 @@ proc loadConfig*() =
       case val
       of "insert": cursorMode = cmInsert
       of "normal": cursorMode = cmNormal
+      else: discard
+    of "clear_on_project_cd":
+      case val
+      of "true", "yes", "on", "1":  clearOnProjectCd = true
+      of "false", "no", "off", "0": clearOnProjectCd = false
+      else: discard
+    of "terminal_copy_paste":
+      case val
+      of "ide":    terminalCopyPaste = tcpIde
+      of "legacy": terminalCopyPaste = tcpLegacy
       else: discard
     else: discard
 
