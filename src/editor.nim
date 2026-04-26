@@ -6,6 +6,7 @@ type
     lines: seq[string]
     cursorRow, cursorCol: int
     topLine: int
+    topCol: int
     path: string
     dirty: bool
     mode: CursorMode
@@ -15,6 +16,10 @@ type
     spans: seq[Span]              # reused per-paint buffer
     selAnchorRow, selAnchorCol: int
     hasSel: bool
+    panning: bool
+    panStartX, panStartY: cint
+    panStartTopLine, panStartTopCol: int
+    wrap: bool
 
   Editor* = object
     e*: Element
@@ -72,6 +77,11 @@ proc visibleRows(ed: ptr Editor): int =
   let avail = max(0, int(ed.e.bounds.b - ed.e.bounds.t))
   max(1, avail div max(1, int(gH)))
 
+proc visibleCols(ed: ptr Editor): int =
+  let (gW, _) = glyphDims()
+  let avail = max(0, int(ed.e.bounds.r - ed.e.bounds.l - gutterWidth(ed)))
+  max(1, avail div max(1, int(gW)))
+
 proc clampCursor(ed: ptr Editor) =
   if ed.buf.lines.len == 0:
     ed.buf.lines.add("")
@@ -89,6 +99,25 @@ proc followCursor(ed: ptr Editor) =
   elif ed.buf.cursorRow >= ed.buf.topLine + vr:
     ed.buf.topLine = ed.buf.cursorRow - vr + 1
   if ed.buf.topLine < 0: ed.buf.topLine = 0
+  let vc = visibleCols(ed)
+  if ed.buf.cursorCol < ed.buf.topCol:
+    ed.buf.topCol = ed.buf.cursorCol
+  elif ed.buf.cursorCol >= ed.buf.topCol + vc:
+    ed.buf.topCol = ed.buf.cursorCol - vc + 1
+  if ed.buf.topCol < 0: ed.buf.topCol = 0
+
+proc editorWrapEnabled*(ed: ptr Editor): bool =
+  ed != nil and ed.tabs.len > 0 and ed.tabs[ed.activeIdx].wrap
+
+proc editorWrapToggle*(ed: ptr Editor) =
+  if ed == nil or ed.tabs.len == 0: return
+  ed.tabs[ed.activeIdx].wrap = not ed.tabs[ed.activeIdx].wrap
+  if ed.tabs[ed.activeIdx].wrap:
+    ed.tabs[ed.activeIdx].topCol = 0   # horizontal scroll meaningless when wrapped
+  elementRepaint(addr ed.e, nil)
+
+proc editorWrapToggleActive*() =
+  editorWrapToggle(theEditor)
 
 proc selOrdered(ed: ptr Editor): tuple[sr, sc, er, ec: int] =
   ## Returns selection in document order (anchor and cursor swapped if needed).
@@ -157,6 +186,7 @@ proc loadIntoBuf(b: var EditorBuf, path: string) =
   b.cursorRow = 0
   b.cursorCol = 0
   b.topLine = 0
+  b.topCol = 0
   b.dirty = false
   b.mode = config.cursorMode
   b.syntax = highlight.syntaxForPath(path)
@@ -393,16 +423,20 @@ proc editorTabCloseForce*(ed: ptr Editor, idx: int) =
 proc editorActiveIdx*(ed: ptr Editor): int =
   if ed == nil: 0 else: ed.activeIdx
 
+type VRow = tuple[rowIdx, lo, hi, segIdx: int, y: cint]
+
 proc paintGutter(ed: ptr Editor, painter: ptr Painter,
-                 contentTop: cint, gW, gH: cint, vr: int, gutterW: cint) =
+                 contentTop: cint, gW, gH: cint, gutterW: cint,
+                 vrows: seq[VRow]) =
   let bx = ed.e.bounds.l
   let gutterRect = Rectangle(l: bx, r: bx + gutterW,
                              t: contentTop, b: ed.e.bounds.b)
   drawBlock(painter, gutterRect, ui.theme.panel2)
-  for i in 0 ..< vr:
-    let rowIdx = ed.buf.topLine + i
-    if rowIdx >= ed.buf.lines.len: break
-    let y = contentTop + cint(i) * gH
+  for vrow in vrows:
+    # Continuation segments (segIdx > 0) leave the gutter slot blank — the
+    # logical line's number only renders on its first visual row.
+    if vrow.segIdx != 0: continue
+    let rowIdx = vrow.rowIdx
     let isCur = (rowIdx == ed.buf.cursorRow)
     let n =
       case config.lineNumbers
@@ -414,8 +448,73 @@ proc paintGutter(ed: ptr Editor, painter: ptr Painter,
     let s = $n
     let color = if isCur: ui.theme.text else: ui.theme.textDisabled
     let r = Rectangle(l: bx, r: bx + gutterW - gW,
-                      t: y, b: y + gH)
+                      t: vrow.y, b: vrow.y + gH)
     drawString(painter, r, s.cstring, s.len, color, cint(ALIGN_RIGHT), nil)
+
+proc buildVisibleRows(ed: ptr Editor, by, gH: cint, vr, vc: int): seq[VRow] =
+  ## Returns the logical-line slices that occupy each visible visual row.
+  ## In wrap mode each long line breaks into ceil(len/vc) segments stacked
+  ## vertically; in non-wrap mode each logical line gets one full-row entry.
+  result = @[]
+  var visualY: cint = by
+  var rowIdx = ed.buf.topLine
+  let wrapOn = ed.buf.wrap
+  let n = ed.buf.lines.len
+  while result.len < vr and rowIdx < n:
+    let lineLen = ed.buf.lines[rowIdx].len
+    if not wrapOn:
+      result.add((rowIdx: rowIdx, lo: 0, hi: lineLen, segIdx: 0, y: visualY))
+      visualY += gH
+    else:
+      let segs = max(1, (lineLen + vc - 1) div vc)
+      for s in 0 ..< segs:
+        if result.len >= vr: break
+        let lo = s * vc
+        let hi = min(lineLen, (s + 1) * vc)
+        result.add((rowIdx: rowIdx, lo: lo, hi: hi, segIdx: s, y: visualY))
+        visualY += gH
+    inc rowIdx
+
+proc clickToLogical(ed: ptr Editor, winX, winY: cint): tuple[row, col: int] =
+  ## Translate a window-pixel click into a logical (row, col), accounting for
+  ## both horizontal scroll and (when on) soft-wrap segmentation.
+  let (gW, gH) = glyphDims()
+  let bx = ed.e.bounds.l
+  let by = ed.e.bounds.t
+  let gutterW = gutterWidth(ed)
+  let lx = winX - bx
+  let ly = winY - by
+  let contentLx = lx - gutterW
+  if not ed.buf.wrap:
+    let row = ed.buf.topLine + int(ly div max(cint(1), gH))
+    let col = ed.buf.topCol + int(max(cint(0), contentLx) div max(cint(1), gW))
+    return (row, col)
+  let vr = visibleRows(ed)
+  let vc = visibleCols(ed)
+  let vrows = buildVisibleRows(ed, by, gH, vr, vc)
+  if vrows.len == 0:
+    return (ed.buf.topLine, 0)
+  var visIdx = int(max(cint(0), ly) div max(cint(1), gH))
+  if visIdx >= vrows.len: visIdx = vrows.len - 1
+  let vrow = vrows[visIdx]
+  let cellOff = vrow.lo
+  let withinSeg = int(max(cint(0), contentLx) div max(cint(1), gW))
+  let col = clamp(cellOff + withinSeg, vrow.lo, vrow.hi)
+  (vrow.rowIdx, col)
+
+proc cursorVRowIdx(ed: ptr Editor, vrows: seq[VRow]): int =
+  ## Index in vrows of the visual row holding the cursor; -1 if off-screen.
+  for i, vr in vrows:
+    if vr.rowIdx != ed.buf.cursorRow: continue
+    if not ed.buf.wrap:
+      return i
+    # Wrap mode: slice contains cursorCol (with the end-of-line edge case
+    # — col == lineLen lands on the last segment).
+    if (ed.buf.cursorCol >= vr.lo and ed.buf.cursorCol < vr.hi) or
+       (ed.buf.cursorCol == vr.hi and
+        (i + 1 >= vrows.len or vrows[i + 1].rowIdx != ed.buf.cursorRow)):
+      return i
+  -1
 
 proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer): cint {.cdecl.} =
   let ed = cast[ptr Editor](element)
@@ -427,53 +526,82 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
     let by = ed.e.bounds.t
     let gutterW = gutterWidth(ed)
     let vr = visibleRows(ed)
+    let vc = visibleCols(ed)
     refreshStates(ed, ed.buf.topLine + vr)
-    if gutterW > 0:
-      paintGutter(ed, painter, by, gW, gH, vr, gutterW)
-    let contentLeft = bx + gutterW
+    let topColOff = if ed.buf.wrap: 0 else: ed.buf.topCol
+    let contentLeft0 = bx + gutterW - cint(topColOff) * gW
+    let contentBaseLeft = bx + gutterW
     var selSR, selSC, selER, selEC: int
     if ed.buf.hasSel:
       (selSR, selSC, selER, selEC) = selOrdered(ed)
-    for i in 0 ..< vr:
-      let rowIdx = ed.buf.topLine + i
-      if rowIdx >= ed.buf.lines.len: break
-      let y = by + cint(i) * gH
-      let rowRect = Rectangle(l: contentLeft, r: ed.e.bounds.r,
-                              t: y, b: y + gH)
+    let vrows = buildVisibleRows(ed, by, gH, vr, vc)
+    for vrow in vrows:
+      let rowIdx = vrow.rowIdx
+      let y = vrow.y
       let line = ed.buf.lines[rowIdx]
-      # selection band — drawn under the tokens so the text remains readable.
+      let leftX = if ed.buf.wrap: contentBaseLeft else: contentLeft0
+      let rowRect = Rectangle(l: leftX, r: ed.e.bounds.r,
+                              t: y, b: y + gH)
+      # selection band — drawn under tokens so glyphs stay readable.
       if ed.buf.hasSel and rowIdx >= selSR and rowIdx <= selER:
-        let lo =
+        let rowLo =
           if rowIdx == selSR: selSC else: 0
-        let hi =
+        let rowHi =
           if rowIdx == selER: selEC
-          elif rowIdx < selER: line.len + 1   # +1 = cosmetic trailing cell so multi-line selections show the newline
+          elif rowIdx < selER: line.len + 1
           else: 0
-        let x0 = contentLeft + cint(lo) * gW
-        let x1 = contentLeft + cint(hi) * gW
-        if x1 > x0:
+        # Clip selection range to this visual segment when wrapped.
+        let segLo = if ed.buf.wrap: max(rowLo, vrow.lo) else: rowLo
+        let segHi = if ed.buf.wrap: min(rowHi, vrow.hi + (if rowIdx < selER and vrow.hi == line.len: 1 else: 0)) else: rowHi
+        if segHi > segLo:
+          let cellOff = if ed.buf.wrap: vrow.lo else: 0
+          let x0 = leftX + cint(segLo - cellOff) * gW
+          let x1 = leftX + cint(segHi - cellOff) * gW
           drawBlock(painter, Rectangle(l: x0, r: x1, t: y, b: y + gH),
                     ui.theme.selected)
       if line.len > 0:
         let entry =
           if rowIdx < ed.buf.lineStartStates.len: ed.buf.lineStartStates[rowIdx]
           else: 0'u8
-        highlight.paintLine(painter, rowRect, line, ed.buf.syntax,
-                            entry, ed.buf.spans)
+        if ed.buf.wrap:
+          # Substring per visual segment. Walk the prefix to compute the
+          # segment-entry tokenizer state on the fly.
+          var st = entry
+          var col = 0
+          while col < vrow.lo and col < line.len:
+            let chunk = line[col ..< min(line.len, vrow.lo)]
+            st = highlight.advanceState(chunk, ed.buf.syntax, st)
+            col = vrow.lo
+          if vrow.hi > vrow.lo:
+            let slice = line[vrow.lo ..< vrow.hi]
+            highlight.paintLine(painter, rowRect, slice, ed.buf.syntax,
+                                st, ed.buf.spans)
+        else:
+          highlight.paintLine(painter, rowRect, line, ed.buf.syntax,
+                              entry, ed.buf.spans)
     # cursor
-    let cRowOnScreen = ed.buf.cursorRow - ed.buf.topLine
-    if cRowOnScreen >= 0 and cRowOnScreen < vr:
-      let cx = contentLeft + cint(ed.buf.cursorCol) * gW
-      let cy = by + cint(cRowOnScreen) * gH
+    let cVI = cursorVRowIdx(ed, vrows)
+    if cVI >= 0:
+      let vrow = vrows[cVI]
+      let leftX = if ed.buf.wrap: contentBaseLeft else: contentLeft0
+      let cellOff = if ed.buf.wrap: vrow.lo else: 0
+      let cx = leftX + cint(ed.buf.cursorCol - cellOff) * gW
+      let cy = vrow.y
       let mode = ed.buf.mode
       let focused = (element.window != nil and element.window.focused == element)
       if mode == cmInsert:
         drawInvert(painter, Rectangle(l: cx, r: cx + gW, t: cy, b: cy + gH))
-      else:  # cmNormal — thin vertical line, blinks when focused
+      else:
         if (not focused) or cursorBlinkOn:
           drawBlock(painter,
                     Rectangle(l: cx, r: cx + 2, t: cy, b: cy + gH),
                     ui.theme.text)
+    # Gutter painted last so any leftward bleed from horizontal scroll
+    # (tokens / selection rects with x < gutterRight) gets covered cleanly.
+    # Driven by vrows so wrap continuations get blank gutter slots and the
+    # current-line highlight tracks the actual logical cursor row.
+    if gutterW > 0:
+      paintGutter(ed, painter, by, gW, gH, gutterW, vrows)
     # focus border
     if element.window != nil and element.window.focused == element:
       drawBorder(painter, ed.e.bounds, 0x9253be'u32,
@@ -493,16 +621,10 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
 
   elif message == msgLeftDown:
     elementFocus(element)
-    let (gW, gH) = glyphDims()
+    ed.buf.panning = false
     let w = element.window
     if w != nil:
-      let lx = w.cursorX - ed.e.bounds.l
-      let ly = w.cursorY - ed.e.bounds.t
-      let gutterW = gutterWidth(ed)
-      let contentLx = lx - gutterW
-      if contentLx < 0 or ly < 0: return 1
-      let row = ed.buf.topLine + int(ly div max(1, gH))
-      let col = int(contentLx div max(1, gW))
+      let (row, col) = clickToLogical(ed, w.cursorX, w.cursorY)
       ed.buf.cursorRow = row
       ed.buf.cursorCol = col
       clampCursor(ed)
@@ -513,25 +635,48 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
       elementRepaint(element, nil)
     return 1
 
+  elif message == msgMiddleDown:
+    elementFocus(element)
+    let w = element.window
+    if w != nil:
+      ed.buf.panning = true
+      ed.buf.panStartX = w.cursorX
+      ed.buf.panStartY = w.cursorY
+      ed.buf.panStartTopLine = ed.buf.topLine
+      ed.buf.panStartTopCol = ed.buf.topCol
+    return 1
+
+  elif message == msgMiddleUp:
+    ed.buf.panning = false
+    return 1
+
   elif message == msgMouseDrag:
     let (gW, gH) = glyphDims()
     let w = element.window
-    if w != nil:
-      let lx = w.cursorX - ed.e.bounds.l
-      let ly = w.cursorY - ed.e.bounds.t
-      let gutterW = gutterWidth(ed)
-      let contentLx = lx - gutterW
-      let row = ed.buf.topLine + int(ly div max(1, gH))
-      let col = int(max(0, contentLx) div max(1, gW))
-      ed.buf.cursorRow = row
-      ed.buf.cursorCol = col
-      clampCursor(ed)
-      followCursor(ed)
-      ed.buf.hasSel = (ed.buf.cursorRow != ed.buf.selAnchorRow or
-                      ed.buf.cursorCol != ed.buf.selAnchorCol)
-      if ed.buf.hasSel:
-        clipboardSetPrimary(selCopyText(ed))
+    if w == nil: return 1
+    if ed.buf.panning:
+      # Grab-the-document semantics: drag the text with the mouse, so view
+      # scrolls opposite to drag direction.
+      let dx = w.cursorX - ed.buf.panStartX
+      let dy = w.cursorY - ed.buf.panStartY
+      let newTopLine = ed.buf.panStartTopLine - int(dy) div max(1, int(gH))
+      let newTopCol  = ed.buf.panStartTopCol  - int(dx) div max(1, int(gW))
+      let vr = visibleRows(ed)
+      let maxTop = max(0, ed.buf.lines.len - vr)
+      ed.buf.topLine = max(0, min(maxTop, newTopLine))
+      ed.buf.topCol  = max(0, newTopCol)
       elementRepaint(element, nil)
+      return 1
+    let (row, col) = clickToLogical(ed, w.cursorX, w.cursorY)
+    ed.buf.cursorRow = row
+    ed.buf.cursorCol = col
+    clampCursor(ed)
+    followCursor(ed)
+    ed.buf.hasSel = (ed.buf.cursorRow != ed.buf.selAnchorRow or
+                    ed.buf.cursorCol != ed.buf.selAnchorCol)
+    if ed.buf.hasSel:
+      clipboardSetPrimary(selCopyText(ed))
+    elementRepaint(element, nil)
     return 1
 
   elif message == msgMouseWheel:

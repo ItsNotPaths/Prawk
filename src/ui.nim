@@ -205,6 +205,10 @@ proc buildUi*(): UiRefs =
   windowRegisterShortcut(result.window, Shortcut(
     code: int(KEYCODE_LETTER('W')), alt: true,
     invoke: paletteJumpCb, cp: nil))
+  windowRegisterShortcut(result.window, Shortcut(
+    code: int(KEYCODE_LETTER('Z')), alt: true,
+    invoke: proc(cp: pointer) {.cdecl.} = editorWrapToggleActive(),
+    cp: nil))
   # Shift+Alt+H/L/Left/Right used to be window-wide tab cycle. Dropped —
   # those chords now belong to the editor's word/page motion family. Tabs
   # are still cycled from inside the tab pane (Alt+Up then Left/Right).

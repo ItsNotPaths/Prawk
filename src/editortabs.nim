@@ -6,6 +6,7 @@ const
 
 type EditorTabs* = object
   e*: Element
+  pinnedFocused*: bool
 
 var theEditorTabs*: ptr EditorTabs
 
@@ -13,16 +14,29 @@ proc tabsHeight*(): cint =
   let (_, gH) = glyphDims()
   gH + 2 * tabPadY
 
-proc tabAtX(lx: cint): int =
-  if theEditor == nil: return -1
+proc pinnedTabWidth(): cint =
   let (gW, _) = glyphDims()
-  var x: cint = 0
+  gW + 2 * tabPadX     # 1-char label + padding
+
+proc pinnedTabLabel(): string =
+  if editorWrapEnabled(theEditor): "*" else: "-"
+
+const pinnedTabSentinel = -1
+
+proc tabAtX(lx: cint): int =
+  ## Returns: pinnedTabSentinel for the wrap-toggle tab, or 0..n-1 for
+  ## regular tabs, or -2 for misses.
+  let pw = pinnedTabWidth()
+  if lx >= 0 and lx < pw: return pinnedTabSentinel
+  if theEditor == nil: return -2
+  let (gW, _) = glyphDims()
+  var x: cint = pw
   for i in 0 ..< editorTabCount(theEditor):
     let label = editorTabLabel(theEditor, i)
     let w = cint(label.len) * gW + 2 * tabPadX
     if lx >= x and lx < x + w: return i
     x += w
-  -1
+  -2
 
 proc focusEditor() =
   if theEditor != nil:
@@ -31,23 +45,39 @@ proc focusEditor() =
 
 proc paintStrip(t: ptr EditorTabs, painter: ptr Painter) =
   drawBlock(painter, t.e.bounds, ui.theme.panel2)
-  if theEditor == nil: return
   let (gW, _) = glyphDims()
-  let activeIdx = editorActiveIdx(theEditor)
-  let n = editorTabCount(theEditor)
-  var x = t.e.bounds.l
-  for i in 0 ..< n:
-    let label = editorTabLabel(theEditor, i)
-    let w = cint(label.len) * gW + 2 * tabPadX
-    if x >= t.e.bounds.r: break
-    let r = Rectangle(l: x, r: min(x + w, t.e.bounds.r),
-                      t: t.e.bounds.t, b: t.e.bounds.b)
-    let active = (i == activeIdx)
-    let bg = if active: ui.theme.selected else: ui.theme.panel2
-    drawBlock(painter, r, bg)
-    let fg = if active: ui.theme.textSelected else: ui.theme.text
-    drawString(painter, r, label.cstring, label.len, fg, cint(ALIGN_CENTER), nil)
-    x += w
+  # --- pinned wrap-toggle tab (always present, leftmost) ----------------
+  let pw = pinnedTabWidth()
+  let pr = Rectangle(l: t.e.bounds.l, r: min(t.e.bounds.l + pw, t.e.bounds.r),
+                     t: t.e.bounds.t, b: t.e.bounds.b)
+  let pinnedActive = t.pinnedFocused
+  let pinnedOn = editorWrapEnabled(theEditor)
+  let pinnedBg =
+    if pinnedActive: ui.theme.selected
+    elif pinnedOn:   ui.theme.buttonHovered   # subtle "engaged" tint
+    else:            ui.theme.panel2
+  let pinnedFg =
+    if pinnedActive: ui.theme.textSelected else: ui.theme.text
+  drawBlock(painter, pr, pinnedBg)
+  let plabel = pinnedTabLabel()
+  drawString(painter, pr, plabel.cstring, plabel.len, pinnedFg,
+             cint(ALIGN_CENTER), nil)
+  if theEditor != nil:
+    let activeIdx = editorActiveIdx(theEditor)
+    let n = editorTabCount(theEditor)
+    var x = t.e.bounds.l + pw
+    for i in 0 ..< n:
+      let label = editorTabLabel(theEditor, i)
+      let w = cint(label.len) * gW + 2 * tabPadX
+      if x >= t.e.bounds.r: break
+      let r = Rectangle(l: x, r: min(x + w, t.e.bounds.r),
+                        t: t.e.bounds.t, b: t.e.bounds.b)
+      let active = (i == activeIdx) and not t.pinnedFocused
+      let bg = if active: ui.theme.selected else: ui.theme.panel2
+      drawBlock(painter, r, bg)
+      let fg = if active: ui.theme.textSelected else: ui.theme.text
+      drawString(painter, r, label.cstring, label.len, fg, cint(ALIGN_CENTER), nil)
+      x += w
   # Bottom border under the strip.
   drawBlock(painter,
             Rectangle(l: t.e.bounds.l, r: t.e.bounds.r,
@@ -74,7 +104,11 @@ proc tabsMessage(element: ptr Element, message: Message, di: cint, dp: pointer):
     if w != nil:
       let lx = w.cursorX - element.bounds.l
       let idx = tabAtX(lx)
-      if idx >= 0 and theEditor != nil:
+      if idx == pinnedTabSentinel:
+        editorWrapToggleActive()
+        elementRepaint(element, nil)
+      elif idx >= 0 and theEditor != nil:
+        t.pinnedFocused = false
         editorTabSwitch(theEditor, idx)
         focusEditor()
         elementRepaint(element, nil)
@@ -89,32 +123,42 @@ proc tabsMessage(element: ptr Element, message: Message, di: cint, dp: pointer):
     let win = element.window
     let alt = (win != nil and win.alt)
     let code = k.code
-    # Down (with or without alt) drops focus back to the editor body.
-    if code == int(KEYCODE_DOWN) or code == int(KEYCODE_ENTER) or
-       code == int(KEYCODE_ESCAPE) or code == int(KEYCODE_LETTER('J')) or
-       code == int(KEYCODE_LETTER('K')):
+    # Enter on the focused pinned tab toggles wrap; otherwise Enter (along
+    # with Down/Esc/j/k) drops focus back to the editor body.
+    if code == int(KEYCODE_ENTER):
+      if t.pinnedFocused:
+        editorWrapToggleActive()
+        elementRepaint(element, nil)
+        return 1
+      focusEditor()
+      return 1
+    if code == int(KEYCODE_DOWN) or code == int(KEYCODE_ESCAPE) or
+       code == int(KEYCODE_LETTER('J')) or code == int(KEYCODE_LETTER('K')):
       focusEditor()
       return 1
     if code == int(KEYCODE_UP):
-      # already at top of col 1 — consume regardless of modifier.
       return 1
-    if theEditor == nil: return 0
-    let n = editorTabCount(theEditor)
-    if n <= 0: return 0
-    # Left / Right / h / l switch tabs IGNORING all modifiers — keeps the
-    # tabs pane self-contained (Alt+H/L don't pane-cross from here) and
-    # forgives fat-fingered Alt+Left / Alt+Right.
+    let n = if theEditor != nil: editorTabCount(theEditor) else: 0
+    # Left / Right / h / l navigate the strip (ignoring modifiers).
     if code == int(KEYCODE_LEFT) or code == int(KEYCODE_LETTER('H')):
-      let cur = editorActiveIdx(theEditor)
-      editorTabSwitch(theEditor, (cur - 1 + n) mod n)
+      if t.pinnedFocused:
+        return 1   # already leftmost
+      if n > 0 and editorActiveIdx(theEditor) == 0:
+        t.pinnedFocused = true
+      elif n > 0:
+        let cur = editorActiveIdx(theEditor)
+        editorTabSwitch(theEditor, cur - 1)
       elementRepaint(element, nil)
       return 1
     if code == int(KEYCODE_RIGHT) or code == int(KEYCODE_LETTER('L')):
-      let cur = editorActiveIdx(theEditor)
-      editorTabSwitch(theEditor, (cur + 1) mod n)
+      if t.pinnedFocused:
+        t.pinnedFocused = false
+      elif n > 0:
+        let cur = editorActiveIdx(theEditor)
+        editorTabSwitch(theEditor, (cur + 1) mod n)
       elementRepaint(element, nil)
       return 1
-    if alt: return 1   # consume any other Alt+key so it doesn't pane-cross
+    if alt: return 1
     return 0
 
   return 0
