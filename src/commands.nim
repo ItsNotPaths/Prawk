@@ -1,5 +1,5 @@
 import std/[os, strutils]
-import luigi, project, editor, terminalstack, theme, config
+import luigi, project, editor, terminalstack, theme, config, minimap
 
 type
   CmdProc* = proc (args: seq[string]) {.closure.}
@@ -143,6 +143,21 @@ proc cmdTheme(args: seq[string]) =
     config.setConfigKey("theme", args[0])
     theme.repaintAllWindows()
 
+proc cmdMinimap(args: seq[string]) =
+  ## `:minimap` toggles. `:minimap on|off` sets explicitly. Persists to config.
+  let mm = theMinimap
+  if mm == nil: return
+  var on = not mm.visible
+  if args.len >= 1:
+    case args[0].toLowerAscii
+    of "on", "true", "1", "yes":  on = true
+    of "off", "false", "0", "no": on = false
+    of "toggle":                  on = not mm.visible
+    else: return
+  minimapSetVisible(mm, on)
+  config.minimapEnabled = on
+  config.setConfigKey("minimap", if on: "on" else: "off")
+
 proc registerBuiltins*() =
   registerCommand("project.load", cmdProjectLoad)
   registerCommand("project.parent", cmdProjectParent)
@@ -162,3 +177,4 @@ proc registerBuiltins*() =
   registerCommand("tab.prev", cmdTabPrev)
   registerCommand("tab.close", cmdTabClose)
   registerCommand("tab.close.force", cmdTabCloseForce)
+  registerCommand("minimap", cmdMinimap)

@@ -88,11 +88,9 @@ type
       codeString*, codeNumber*, codeOperator*, codePreprocessor*: uint32
 
   Painter* {.bycopy, importc: "UIPainter", lH.} = object
-    # Fields not accessed from Nim. Declaring it bycopy/importc lets us pass
-    # `ptr Painter` around with the right C typename.
-    clip: Rectangle
-    bits: pointer
-    width, height: cint
+    clip*: Rectangle
+    bits*: pointer
+    width*, height*: cint
 
   # We only ever read glyphWidth/glyphHeight (the first two fields). The rest
   # of UIFont varies with -DUI_FREETYPE; leaving it off shrinks the Nim view
@@ -226,6 +224,9 @@ proc menuAddItem*(menu: ptr Menu; flags: uint32; label: cstring;
                   cp: pointer = nil)
                   {.cdecl, lH, importc: "UIMenuAddItem".}
 proc menuShow*(menu: ptr Menu) {.cdecl, lH, importc: "UIMenuShow".}
+
+proc painterPixels*(p: ptr Painter): ptr UncheckedArray[uint32] {.inline.} =
+  cast[ptr UncheckedArray[uint32]](p.bits)
 
 proc drawBlock*(p: ptr Painter; r: Rectangle; color: uint32)
                   {.cdecl, lH, importc: "UIDrawBlock".}

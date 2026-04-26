@@ -19,6 +19,7 @@ var
   cursorMode*: CursorMode = cmInsert
   clearOnProjectCd*: bool = false
   terminalCopyPaste*: TerminalCopyPaste = tcpIde
+  minimapEnabled*: bool = true
 
 proc tildify*(p: string): string =
   let h = getHomeDir()
@@ -98,6 +99,11 @@ proc loadConfig*() =
       case val
       of "ide":    terminalCopyPaste = tcpIde
       of "legacy": terminalCopyPaste = tcpLegacy
+      else: discard
+    of "minimap":
+      case val
+      of "on", "true", "yes", "1":   minimapEnabled = true
+      of "off", "false", "no", "0":  minimapEnabled = false
       else: discard
     else: discard
 

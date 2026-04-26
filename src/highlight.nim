@@ -213,7 +213,7 @@ proc tokenizeLine*(line: string, rule: ptr SyntaxRule,
 
   return 0'u8
 
-proc colorFor(kind: TokenKind): uint32 {.inline.} =
+proc colorFor*(kind: TokenKind): uint32 {.inline.} =
   case kind
   of tkKeyword:    ui.theme.codePreprocessor   # luigi has no codeKeyword slot
   of tkString:     ui.theme.codeString

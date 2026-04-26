@@ -1,5 +1,5 @@
 import luigi
-import term, pump, editor, editortabs, menubar, tree, providers, config, resultspane, terminalstack, clshell, project, commands
+import term, pump, editor, editortabs, menubar, tree, providers, config, resultspane, terminalstack, clshell, project, commands, minimap
 export luigi, editor, menubar
 
 var
@@ -81,6 +81,8 @@ proc onWinMsg(element: ptr Element, message: Message, di: cint, dp: pointer): ci
         let prevIdx = termStackRef.focusIdx - 1
         if prevIdx >= 0:
           stackFocusAt(termStackRef, prevIdx)
+      elif col == 1 and tabPaneEl != nil:
+        focusElement(tabPaneEl)
     return 1
   return 0
 
@@ -118,7 +120,9 @@ type UiRefs* = object
   gitPane*: ptr Panel
   editorCol*: ptr Panel
   editorTabs*: ptr EditorTabs
+  editorBody*: ptr Panel
   editor*: ptr Editor
+  minimap*: ptr Minimap
   termStack*: ptr TerminalStack
 
 proc stubPanel(parent: ptr Element, label: cstring): ptr Panel =
@@ -148,10 +152,17 @@ proc buildUi*(): UiRefs =
   result.innerSplit = splitPaneCreate(addr result.rootSplit.e, 0, 0.65)
 
   # editorCol: tab strip on top + editor body underneath, stacked vertically.
+  # editorBody runs the editor + minimap horizontally so the minimap can sit
+  # on the right edge with a fixed width.
   result.editorCol = panelCreate(addr result.innerSplit.e, PANEL_GRAY or PANEL_EXPAND)
   result.editorTabs = editorTabsCreate(addr result.editorCol.e)
-  result.editor = editorCreate(addr result.editorCol.e,
+  result.editorBody = panelCreate(addr result.editorCol.e,
+                                  PANEL_HORIZONTAL or PANEL_EXPAND or
+                                  ELEMENT_V_FILL or ELEMENT_H_FILL)
+  result.editor = editorCreate(addr result.editorBody.e,
                                ELEMENT_V_FILL or ELEMENT_H_FILL)
+  result.minimap = minimapCreate(addr result.editorBody.e)
+  minimapSetVisible(result.minimap, config.minimapEnabled)
 
   result.termStack = stackCreate(addr result.innerSplit.e)
   stackInstall(result.termStack)
@@ -215,6 +226,10 @@ proc buildUi*(): UiRefs =
   windowRegisterShortcut(result.window, Shortcut(
     code: int(KEYCODE_LETTER('P')), alt: true, shift: true,
     invoke: paletteLockCb, cp: nil))
+  windowRegisterShortcut(result.window, Shortcut(
+    code: int(KEYCODE_LETTER('M')), alt: true,
+    invoke: proc(cp: pointer) {.cdecl.} = discard runCommand("minimap"),
+    cp: nil))
 
   startPump(result.window)
 

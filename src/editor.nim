@@ -345,15 +345,31 @@ proc wordBack(ed: ptr Editor) =
   while col > 0 and not isWS(line[col - 1]): dec col
   ed.buf.cursorCol = col
 
-proc pageDown(ed: ptr Editor) =
-  let vr = visibleRows(ed)
-  ed.buf.cursorRow += vr
-  ed.buf.topLine += vr
+proc dimToward(fg, bg: uint32, alpha: float): uint32 {.inline.} =
+  let inv = 1.0 - alpha
+  let fr = int((fg shr 16) and 0xFF); let br = int((bg shr 16) and 0xFF)
+  let fG = int((fg shr 8)  and 0xFF); let bG = int((bg shr 8)  and 0xFF)
+  let fB = int(fg and 0xFF);          let bB = int(bg and 0xFF)
+  let nr = int(float(fr) * alpha + float(br) * inv)
+  let ng = int(float(fG) * alpha + float(bG) * inv)
+  let nb = int(float(fB) * alpha + float(bB) * inv)
+  uint32((nr shl 16) or (ng shl 8) or nb)
 
-proc pageUp(ed: ptr Editor) =
-  let vr = visibleRows(ed)
-  ed.buf.cursorRow -= vr
-  ed.buf.topLine -= vr
+proc drawDot(painter: ptr Painter, cx, cy: cint, w, h: cint, color: uint32) =
+  ## Direct-pixel dot — sidesteps the font (no glyph for U+00B7 in our
+  ## embedded font, so drawString fell back to '?'). Same trick the minimap
+  ## uses: write straight into painter.bits, clipped against painter.clip.
+  let fb = painterPixels(painter)
+  let stride = int(painter.width)
+  let clip = painter.clip
+  for dy in 0 ..< int(h):
+    let py = int(cy) + dy
+    if py < int(clip.t) or py >= int(clip.b): continue
+    let rowOff = py * stride
+    for dx in 0 ..< int(w):
+      let px = int(cx) + dx
+      if px < int(clip.l) or px >= int(clip.r): continue
+      fb[rowOff + px] = color
 
 proc bufferStart(ed: ptr Editor) =
   ed.buf.cursorRow = 0
@@ -422,6 +438,30 @@ proc editorTabCloseForce*(ed: ptr Editor, idx: int) =
 
 proc editorActiveIdx*(ed: ptr Editor): int =
   if ed == nil: 0 else: ed.activeIdx
+
+# Accessors for the minimap and any other consumer that needs read-only buffer
+# state without the editor module exporting EditorBuf's fields wholesale.
+proc activeBuf*(ed: ptr Editor): ptr EditorBuf =
+  if ed == nil or ed.tabs.len == 0: nil else: addr ed.tabs[ed.activeIdx]
+
+proc bufLines*(b: ptr EditorBuf): lent seq[string] = b.lines
+proc bufTopLine*(b: ptr EditorBuf): int = b.topLine
+proc bufCursorRow*(b: ptr EditorBuf): int = b.cursorRow
+proc bufDirtyFromRow*(b: ptr EditorBuf): int = b.dirtyFromRow
+proc bufSyntax*(b: ptr EditorBuf): ptr SyntaxRule = b.syntax
+proc bufLineStartStates*(b: ptr EditorBuf): ptr seq[uint8] = addr b.lineStartStates
+proc bufVisibleRows*(ed: ptr Editor): int = visibleRows(ed)
+
+# Minimap calls this to keep lineStartStates current up to whatever row it's
+# about to tokenize.
+proc bufRefreshStates*(ed: ptr Editor, throughRow: int) =
+  refreshStates(ed, throughRow)
+
+# Minimap click-to-jump: clamp topLine, follow cursor handling stays in editor.
+proc bufSetTopLine*(ed: ptr Editor, top: int) =
+  let n = ed.buf.lines.len
+  let vr = visibleRows(ed)
+  ed.buf.topLine = clamp(top, 0, max(0, n - vr))
 
 type VRow = tuple[rowIdx, lo, hi, segIdx: int, y: cint]
 
@@ -579,6 +619,32 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
         else:
           highlight.paintLine(painter, rowRect, line, ed.buf.syntax,
                               entry, ed.buf.spans)
+        # Whitespace markers — overlay leading-space dots and tab bars in a
+        # dimmed color (manual blend toward bg, no luigi alpha needed).
+        let dim = dimToward(ui.theme.codeDefault, ui.theme.codeBackground, 0.35)
+        var firstNonWS = 0
+        while firstNonWS < line.len and
+              (line[firstNonWS] == ' ' or line[firstNonWS] == '\t'):
+          inc firstNonWS
+        let cellOff = if ed.buf.wrap: vrow.lo else: 0
+        let visLo = cellOff
+        let visHi = if ed.buf.wrap: vrow.hi else: line.len
+        for i in visLo ..< min(line.len, visHi):
+          let c = line[i]
+          if c == ' ' and i < firstNonWS:
+            let cx = leftX + cint(i - cellOff) * gW
+            let dotW: cint = 2
+            let dotH: cint = 2
+            drawDot(painter,
+                    cx + (gW - dotW) div 2,
+                    y + (gH - dotH) div 2,
+                    dotW, dotH, dim)
+          elif c == '\t':
+            let cx = leftX + cint(i - cellOff) * gW
+            let mid = y + gH div 2
+            drawBlock(painter,
+                      Rectangle(l: cx + 2, r: cx + gW - 2,
+                                t: mid, b: mid + 1), dim)
     # cursor
     let cVI = cursorVRowIdx(ed, vrows)
     if cVI >= 0:
@@ -720,58 +786,9 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
     template editStart() =
       if ed.buf.hasSel: deleteSelection(ed)
 
-    if alt and shift:
-      # Shift+Alt motion family — word/page/buffer. Shift here doubles for
-      # both the Alt-modifier signal AND selection-extend (consistent with
-      # plain Shift+arrow elsewhere).
-      let oldHas = ed.buf.hasSel
-      if not oldHas:
-        ed.buf.selAnchorRow = preRow
-        ed.buf.selAnchorCol = preCol
-        ed.buf.hasSel = true
-      if code == int(KEYCODE_LETTER('L')) or code == int(KEYCODE_RIGHT):
-        wordForward(ed)
-      elif code == int(KEYCODE_LETTER('H')) or code == int(KEYCODE_LEFT):
-        wordBack(ed)
-      elif code == int(KEYCODE_LETTER('J')) or code == int(KEYCODE_DOWN):
-        pageDown(ed)
-      elif code == int(KEYCODE_LETTER('K')) or code == int(KEYCODE_UP):
-        pageUp(ed)
-      elif code == int(KEYCODE_LETTER('A')) or code == int(KEYCODE_HOME):
-        bufferStart(ed)
-      elif code == int(KEYCODE_LETTER('E')) or code == int(KEYCODE_END):
-        bufferEnd(ed)
-      else:
-        # Not a motion — restore the pre-call selection state and bubble.
-        ed.buf.hasSel = oldHas
-        return 0    # bubble — leaves Shift+Alt+T / Shift+Alt+P shortcuts alone
-      clampCursor(ed)
-      followCursor(ed)
-      motionEnd()
-      elementRepaint(element, nil)
-      return 1
-
-    if alt:
-      # Alt+Up jumps focus to the tab pane above the editor.
-      if code == int(KEYCODE_UP):
-        if editorAltUpCb != nil: editorAltUpCb()
-        return 1
-      # Alt+J / Alt+K still jump N lines; arrow aliases dropped so that the
-      # vertical-arrow grammar belongs to pane focus, not buffer motion.
-      let isDown = code == int(KEYCODE_LETTER('J'))
-      let isUp   = code == int(KEYCODE_LETTER('K'))
-      if isDown or isUp:
-        motionStart()
-        let n = max(1, config.cursorJumpLines)
-        if isDown: ed.buf.cursorRow += n
-        else:      ed.buf.cursorRow -= n
-        clampCursor(ed)
-        followCursor(ed)
-        motionEnd()
-        elementRepaint(element, nil)
-        return 1
-      # Other Alt+... bubble up for pane navigation / window shortcuts.
-      return 0
+    # Alt and Shift+Alt belong to the IDE (pane navigation, tab cycling,
+    # window shortcuts). The editor never intercepts them.
+    if alt: return 0
 
     if code == int(KEYCODE_INSERT):
       ed.buf.mode =
@@ -780,23 +797,41 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
       return 1
 
     if ctrl:
-      if code == int(KEYCODE_LETTER('F')):
-        motionStart(); ed.buf.cursorCol += 1
-      elif code == int(KEYCODE_LETTER('B')):
-        motionStart(); ed.buf.cursorCol -= 1
-      elif code == int(KEYCODE_LETTER('N')):
-        motionStart(); ed.buf.cursorRow += 1
-      elif code == int(KEYCODE_LETTER('P')):
-        motionStart(); ed.buf.cursorRow -= 1
-      elif code == int(KEYCODE_LETTER('A')):
-        if shift:
-          selAll(ed)
-        else:
-          motionStart(); ed.buf.cursorCol = 0
-      elif code == int(KEYCODE_LETTER('E')):
-        motionStart(); ed.buf.cursorCol = ed.buf.lines[ed.buf.cursorRow].len
-      elif code == int(KEYCODE_LETTER('K')):
-        editStart(); killToEnd(ed)
+      # Ctrl + (arrow | h/j/k/l | Home/End) = step-bigger motion.
+      # Shift extends selection (standard convention).
+      let isLeft  = code == int(KEYCODE_LEFT)  or code == int(KEYCODE_LETTER('H'))
+      let isRight = code == int(KEYCODE_RIGHT) or code == int(KEYCODE_LETTER('L'))
+      let isDown  = code == int(KEYCODE_DOWN)  or code == int(KEYCODE_LETTER('J'))
+      let isUp    = code == int(KEYCODE_UP)    or code == int(KEYCODE_LETTER('K'))
+      let isHome  = code == int(KEYCODE_HOME)
+      let isEnd   = code == int(KEYCODE_END)
+      if isLeft or isRight or isDown or isUp or isHome or isEnd:
+        motionStart()
+        if   isLeft:  wordBack(ed)
+        elif isRight: wordForward(ed)
+        elif isDown:  ed.buf.cursorRow += max(1, config.cursorJumpLines)
+        elif isUp:    ed.buf.cursorRow -= max(1, config.cursorJumpLines)
+        elif isHome:  bufferStart(ed)
+        elif isEnd:   bufferEnd(ed)
+        clampCursor(ed)
+        followCursor(ed)
+        motionEnd()
+        elementRepaint(element, nil)
+        return 1
+
+      # Ctrl+N = jump to end of current line (Shift extends selection).
+      if code == int(KEYCODE_LETTER('N')):
+        motionStart()
+        ed.buf.cursorCol = ed.buf.lines[ed.buf.cursorRow].len
+        clampCursor(ed)
+        followCursor(ed)
+        motionEnd()
+        elementRepaint(element, nil)
+        return 1
+
+      # Ctrl + letter = action.
+      if code == int(KEYCODE_LETTER('A')):
+        selAll(ed)
       elif code == int(KEYCODE_LETTER('S')):
         saveCurrent(ed)
       elif code == int(KEYCODE_LETTER('C')):
@@ -809,15 +844,11 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
           for i, line in parts:
             if i > 0: insertNewline(ed)
             if line.len > 0: insertText(ed, line)
+      elif code == int(KEYCODE_LETTER('D')):
+        # killToEnd moved off Ctrl+K so K could mirror Up.
+        editStart(); killToEnd(ed)
       else:
         return 0
-      # K/S/C/V are not motions — skip the motionEnd finalize. selAll
-      # already set hasSel; motionEnd just publishes to PRIMARY.
-      if not (code == int(KEYCODE_LETTER('K')) or
-              code == int(KEYCODE_LETTER('S')) or
-              code == int(KEYCODE_LETTER('C')) or
-              code == int(KEYCODE_LETTER('V'))):
-        motionEnd()
       clampCursor(ed)
       followCursor(ed)
       elementRepaint(element, nil)
