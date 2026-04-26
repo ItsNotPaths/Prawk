@@ -221,6 +221,65 @@ proc backspace(ed: ptr Editor) =
     ed.buf.dirty = true
     invalidateFrom(ed, row - 1)
 
+proc isWS(c: char): bool {.inline.} =
+  c == ' ' or c == '\t'
+
+proc wordForward(ed: ptr Editor) =
+  ## Vim-W-like jump: skip current run (whitespace or non-whitespace), then
+  ## land on the start of the next non-whitespace block. Wraps to next line.
+  var row = ed.buf.cursorRow
+  var col = ed.buf.cursorCol
+  if row >= ed.buf.lines.len: return
+  var line = ed.buf.lines[row]
+  if col >= line.len:
+    if row + 1 < ed.buf.lines.len:
+      ed.buf.cursorRow = row + 1
+      ed.buf.cursorCol = 0
+    return
+  let inWS = isWS(line[col])
+  while col < line.len and isWS(line[col]) == inWS: inc col
+  while col < line.len and isWS(line[col]): inc col
+  if col >= line.len and row + 1 < ed.buf.lines.len:
+    ed.buf.cursorRow = row + 1
+    ed.buf.cursorCol = 0
+  else:
+    ed.buf.cursorCol = col
+
+proc wordBack(ed: ptr Editor) =
+  ## Mirror of wordForward — land on the start of the previous word, wrapping
+  ## to the end of the previous line when at column 0.
+  var row = ed.buf.cursorRow
+  var col = ed.buf.cursorCol
+  if col == 0:
+    if row > 0:
+      ed.buf.cursorRow = row - 1
+      ed.buf.cursorCol = ed.buf.lines[row - 1].len
+    return
+  let line = ed.buf.lines[row]
+  dec col
+  while col > 0 and isWS(line[col]): dec col
+  while col > 0 and not isWS(line[col - 1]): dec col
+  ed.buf.cursorCol = col
+
+proc pageDown(ed: ptr Editor) =
+  let vr = visibleRows(ed)
+  ed.buf.cursorRow += vr
+  ed.buf.topLine += vr
+
+proc pageUp(ed: ptr Editor) =
+  let vr = visibleRows(ed)
+  ed.buf.cursorRow -= vr
+  ed.buf.topLine -= vr
+
+proc bufferStart(ed: ptr Editor) =
+  ed.buf.cursorRow = 0
+  ed.buf.cursorCol = 0
+
+proc bufferEnd(ed: ptr Editor) =
+  if ed.buf.lines.len == 0: return
+  ed.buf.cursorRow = ed.buf.lines.len - 1
+  ed.buf.cursorCol = ed.buf.lines[ed.buf.cursorRow].len
+
 proc killToEnd(ed: ptr Editor) =
   let row = ed.buf.cursorRow
   let col = ed.buf.cursorCol
@@ -394,9 +453,31 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
     let k = cast[ptr KeyTyped](dp)
     let w = element.window
     let code = k.code
-    let alt  = (w != nil and w.alt)
-    let ctrl = (w != nil and w.ctrl)
+    let alt   = (w != nil and w.alt)
+    let ctrl  = (w != nil and w.ctrl)
+    let shift = (w != nil and w.shift)
     clampCursor(ed)
+
+    if alt and shift:
+      # Shift+Alt motion family — word/page/buffer.
+      if code == int(KEYCODE_LETTER('L')) or code == int(KEYCODE_RIGHT):
+        wordForward(ed)
+      elif code == int(KEYCODE_LETTER('H')) or code == int(KEYCODE_LEFT):
+        wordBack(ed)
+      elif code == int(KEYCODE_LETTER('J')) or code == int(KEYCODE_DOWN):
+        pageDown(ed)
+      elif code == int(KEYCODE_LETTER('K')) or code == int(KEYCODE_UP):
+        pageUp(ed)
+      elif code == int(KEYCODE_LETTER('A')) or code == int(KEYCODE_HOME):
+        bufferStart(ed)
+      elif code == int(KEYCODE_LETTER('E')) or code == int(KEYCODE_END):
+        bufferEnd(ed)
+      else:
+        return 0    # bubble — leaves Shift+Alt+T / Shift+Alt+P shortcuts alone
+      clampCursor(ed)
+      followCursor(ed)
+      elementRepaint(element, nil)
+      return 1
 
     if alt:
       # Alt+Up jumps focus to the tab pane above the editor.

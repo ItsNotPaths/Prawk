@@ -96,12 +96,6 @@ proc paletteLockCb(cp: pointer) {.cdecl.} =
     prefix.add($(termStackRef.focusIdx + 1))
   openPaletteWith(prefix)
 
-proc tabNextCb(cp: pointer) {.cdecl.} =
-  if theEditor != nil: editorTabNext(theEditor)
-
-proc tabPrevCb(cp: pointer) {.cdecl.} =
-  if theEditor != nil: editorTabPrev(theEditor)
-
 proc altQDispatch(cp: pointer) {.cdecl.} =
   ## Routes Alt+Q by focused column: editor (body or tab strip) → close active
   ## tab; terminal → kill.
@@ -211,18 +205,9 @@ proc buildUi*(): UiRefs =
   windowRegisterShortcut(result.window, Shortcut(
     code: int(KEYCODE_LETTER('W')), alt: true,
     invoke: paletteJumpCb, cp: nil))
-  windowRegisterShortcut(result.window, Shortcut(
-    code: int(KEYCODE_LETTER('L')), alt: true, shift: true,
-    invoke: tabNextCb, cp: nil))
-  windowRegisterShortcut(result.window, Shortcut(
-    code: int(KEYCODE_LETTER('H')), alt: true, shift: true,
-    invoke: tabPrevCb, cp: nil))
-  windowRegisterShortcut(result.window, Shortcut(
-    code: int(KEYCODE_RIGHT), alt: true, shift: true,
-    invoke: tabNextCb, cp: nil))
-  windowRegisterShortcut(result.window, Shortcut(
-    code: int(KEYCODE_LEFT), alt: true, shift: true,
-    invoke: tabPrevCb, cp: nil))
+  # Shift+Alt+H/L/Left/Right used to be window-wide tab cycle. Dropped —
+  # those chords now belong to the editor's word/page motion family. Tabs
+  # are still cycled from inside the tab pane (Alt+Up then Left/Right).
   windowRegisterShortcut(result.window, Shortcut(
     code: int(KEYCODE_LETTER('P')), alt: true, shift: true,
     invoke: paletteLockCb, cp: nil))
