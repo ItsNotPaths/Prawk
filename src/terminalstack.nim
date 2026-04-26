@@ -1,5 +1,5 @@
 import std/os
-import luigi, term, project, config
+import luigi, term, project, config, font
 
 type
   TerminalStack* = object
@@ -14,12 +14,6 @@ const
   headerPadX: cint = 6
   headerPadY: cint = 3
   minTerminalRows = 6
-
-proc glyphDims(): (cint, cint) =
-  if ui.activeFont != nil:
-    (ui.activeFont.glyphWidth, ui.activeFont.glyphHeight)
-  else:
-    (9.cint, 16.cint)
 
 proc headerHeight(): cint =
   let (_, gH) = glyphDims()

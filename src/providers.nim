@@ -10,13 +10,6 @@ var
   theProjectsState: PathList
   theProvidersPane: ptr ResultsPane
 
-proc tildify(p: string): string =
-  let h = getHomeDir()
-  if h.len > 0 and p.startsWith(h):
-    "~/" & p[h.len .. ^1]
-  else:
-    p
-
 # ---------- recents (file-recents) ----------
 
 proc refreshRecents() =
@@ -31,7 +24,7 @@ proc pathRowCount(s: pointer): int {.nimcall.} =
 proc pathRowText(s: pointer, i: int): string {.nimcall.} =
   let st = cast[ptr PathList](s)
   if i < 0 or i >= st.list.len: ""
-  else: tildify(st.list[i])
+  else: config.tildify(st.list[i])
 
 proc recentsOnSelect(s: pointer, i: int) {.nimcall.} =
   let st = cast[ptr PathList](s)
@@ -97,13 +90,7 @@ proc helpProvider*(): Provider =
 # ---------- install ----------
 
 proc swapTo(prov: Provider) =
-  if theProvidersPane == nil: return
-  if theProvidersPane.current.name == prov.name:
-    paneResetSelection(theProvidersPane)
-  else:
-    panePushProvider(theProvidersPane, prov)
-  if theProvidersPane.e.window != nil:
-    elementFocus(addr theProvidersPane.e)
+  paneSwapTo(theProvidersPane, prov)
 
 proc providersInstall*(pane: ptr ResultsPane) =
   theProvidersPane = pane

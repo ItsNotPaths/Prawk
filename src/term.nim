@@ -1,7 +1,7 @@
 import std/os
 import posix
 import luigi
-import pty, project
+import pty, project, font
 
 {.compile: "../vendor/libtmt/tmt.c".}
 {.passC: "-I\"" & (currentSourcePath.parentDir.parentDir / "vendor" / "libtmt") & "\"".}
@@ -58,12 +58,6 @@ const bgPalette: array[9, uint32] = [
 proc colorOf(c: TmtColor, fg: bool): uint32 =
   let idx = if c < 1 or c >= 9: 8 else: int(c - 1)
   if fg: fgPalette[idx] else: bgPalette[idx]
-
-proc glyphDims(): (cint, cint) =
-  if ui.activeFont != nil:
-    (ui.activeFont.glyphWidth, ui.activeFont.glyphHeight)
-  else:
-    (9.cint, 16.cint)
 
 proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: pointer): cint {.cdecl.} =
   let t = cast[ptr Terminal](element)
@@ -152,6 +146,11 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
       tmt_close(t.vt); t.vt = nil
     if t.ptyFd >= 0:
       discard close(t.ptyFd); t.ptyFd = -1
+    if t.pid > 0:
+      discard kill(t.pid, SIGTERM)
+      var st: cint
+      discard waitpid(t.pid, st, WNOHANG)
+      t.pid = Pid(-1)
     for i, p in allTerminals:
       if p == t:
         allTerminals.del(i); break

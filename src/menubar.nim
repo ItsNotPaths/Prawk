@@ -1,5 +1,5 @@
 import std/strutils
-import luigi, commands, config, clshell
+import luigi, commands, config, clshell, font
 
 type
   MenuOption = object
@@ -102,19 +102,21 @@ proc restoreFocusAfterMenu(mb: ptr Menubar) =
     elementFocus(prev)
     elementRepaint(prev, nil)
 
+proc mkOption(label: string, cmd: string = "", args: seq[string] = @[]): MenuOption =
+  MenuOption(label: label, command: cmd, args: args)
+
 proc rebuildFileOptions(mb: ptr Menubar) =
   mb.items[0].options = @[
-    MenuOption(label: "Load Parent As Project", command: "project.parent"),
-    MenuOption(label: "Save",                   command: "editor.save"),
-    MenuOption(label: "Save As..."),
-    MenuOption(label: "Quit",                   command: "quit"),
+    mkOption("Load Parent As Project", "project.parent"),
+    mkOption("Save",                   "editor.save"),
+    mkOption("Save As..."),
+    mkOption("Quit",                   "quit"),
   ]
   let recents = config.readRecents("recents.files")
   if recents.len > 0:
-    mb.items[0].options.add(MenuOption(label: "--- Recent ---"))
+    mb.items[0].options.add(mkOption("--- Recent ---"))
     for p in recents:
-      mb.items[0].options.add(MenuOption(
-        label: p, command: "editor.open", args: @[p]))
+      mb.items[0].options.add(mkOption(p, "editor.open", @[p]))
 
 proc spawnMenu(mb: ptr Menubar, idx: int) =
   if idx < 0 or idx >= mb.items.len: return
@@ -186,12 +188,12 @@ proc menubarMessage(element: ptr Element, message: Message, di: cint, dp: pointe
   let mb = cast[ptr Menubar](element)
 
   if message == msgGetHeight:
-    let gH = if ui.activeFont != nil: ui.activeFont.glyphHeight else: 16.cint
+    let (_, gH) = glyphDims()
     return gH + 2 * padY
 
   elif message == msgPaint:
     let painter = cast[ptr Painter](dp)
-    let gW = if ui.activeFont != nil: ui.activeFont.glyphWidth else: 9.cint
+    let (gW, _) = glyphDims()
     if mb.palette:
       drawBlock(painter, element.bounds, ui.theme.textboxFocused)
       var leftX = element.bounds.l + padX
@@ -226,7 +228,7 @@ proc menubarMessage(element: ptr Element, message: Message, di: cint, dp: pointe
       let itemRect = Rectangle(l: x, r: x + w, t: element.bounds.t, b: element.bounds.b)
       let bg = if i == mb.hovered: ui.theme.buttonHovered else: ui.theme.panel2
       drawBlock(painter, itemRect, bg)
-      drawString(painter, itemRect, label, castInt, ui.theme.text, cint(ALIGN_CENTER), nil)
+      drawString(painter, itemRect, label, -1, ui.theme.text, cint(ALIGN_CENTER), nil)
       mb.items[i].x = x - element.bounds.l
       mb.items[i].w = w
       x += w
@@ -298,9 +300,6 @@ proc menubarMessage(element: ptr Element, message: Message, di: cint, dp: pointe
 
   return 0
 
-proc mkOption(label: string, cmd: string = "", args: seq[string] = @[]): MenuOption =
-  MenuOption(label: label, command: cmd, args: args)
-
 proc openPaletteWith*(text: string) =
   if theMenubar == nil: return
   enterPalette(theMenubar)
@@ -311,12 +310,9 @@ proc menubarCreate*(parent: ptr Element, flags: uint32 = 0): ptr Menubar =
   let e = elementCreate(csize_t(sizeof(Menubar)), parent, flags or ELEMENT_TAB_STOP,
                         menubarMessage, "Menubar")
   let mb = cast[ptr Menubar](e)
-  mb.items[0] = MenuItem(label: cstring"File", options: @[
-    mkOption("Load Parent As Project", "project.parent"),
-    mkOption("Save",                   "editor.save"),
-    mkOption("Save As..."),
-    mkOption("Quit",                   "quit"),
-  ])
+  # File menu options are built lazily by rebuildFileOptions on each spawn
+  # (recents are dynamic) — only the label is set here.
+  mb.items[0] = MenuItem(label: cstring"File")
   mb.items[1] = MenuItem(label: cstring"Edit", options: @[
     mkOption("Copy"),
     mkOption("Paste"),

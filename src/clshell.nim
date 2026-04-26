@@ -1,6 +1,16 @@
-import std/[os, strutils, exitprocs, monotimes]
+import std/[os, strutils]
 import posix, posix/termios
 import luigi, commands, resultspane, project, pty, config
+
+proc atexit(p: proc() {.cdecl.}): cint {.importc, header: "<stdlib.h>", discardable.}
+proc clock_gettime(clkId: cint, tp: ptr Timespec): cint
+  {.importc, header: "<time.h>", discardable.}
+const CLOCK_MONOTONIC = 1.cint
+
+proc monoNs(): int64 =
+  var ts: Timespec
+  clock_gettime(CLOCK_MONOTONIC, addr ts)
+  int64(ts.tv_sec) * 1_000_000_000 + int64(ts.tv_nsec)
 
 proc clLog(msg: string) =
   try: stderr.writeLine("[cl] " & msg); stderr.flushFile()
@@ -20,6 +30,8 @@ type
     lines*: seq[string]
     label*: string
 
+  ClRun = enum crIdle, crShell, crGrep
+
   ClShell = object
     fd: cint
     pid: Pid
@@ -27,11 +39,9 @@ type
     readBuf: array[4096, char]
     lineBuf: string
     ringBuf: seq[string]
+    ringHead: int       # index of oldest line in ringBuf
     pendingHits: seq[GrepHit]
-    pendingLines: seq[string]
-    expectGrepRun: bool
-    expectShellRun: bool
-    running: bool
+    state: ClRun
 
 const
   ringCap = 500
@@ -56,14 +66,11 @@ proc clShellWrite*(line: string) =
   let nw = write(theClShell.fd, payload.cstring, payload.len)
   clLog("write: " & line & " (" & $nw & "/" & $payload.len & " bytes)")
 
-proc clShellRunInternal*(cmd: string) =
-  clShellWrite(cmd)
-
 proc onProjectChange() =
   if theClShell.fd >= 0 and project.projectRoot.len > 0:
-    clShellRunInternal("cd " & quoteShell(project.projectRoot))
+    clShellWrite("cd " & quoteShell(project.projectRoot))
 
-proc shutdown() {.noconv.} =
+proc shutdown() {.cdecl.} =
   if theClShell.pid > 0:
     discard kill(theClShell.pid, SIGTERM)
   if theClShell.fd >= 0:
@@ -71,7 +78,7 @@ proc shutdown() {.noconv.} =
     theClShell.fd = -1
 
 proc generateSentinel(): string =
-  let seed = cast[uint64](getMonoTime().ticks) xor cast[uint64](getpid())
+  let seed = cast[uint64](monoNs()) xor cast[uint64](getpid())
   let hex = toHex(int64(seed and 0xFFFFFFFF'u64), 8).toLowerAscii
   "__prawk_sentinel_" & hex
 
@@ -81,10 +88,7 @@ proc clShellInit*(workDir: string) =
   theClShell.lineBuf = ""
   theClShell.ringBuf = @[]
   theClShell.pendingHits = @[]
-  theClShell.pendingLines = @[]
-  theClShell.expectGrepRun = false
-  theClShell.expectShellRun = false
-  theClShell.running = false
+  theClShell.state = crIdle
   theClShell.sentinel = generateSentinel()
   let (fd, pid) = startShell(clRows, clCols, workDir, "dumb")
   clLog("init: workDir=" & workDir & " fd=" & $fd & " pid=" & $pid &
@@ -101,7 +105,7 @@ proc clShellInit*(workDir: string) =
     ts.c_lflag = ts.c_lflag and not Cflag(ECHO or ECHOE or ECHOK or ECHONL)
     discard tcsetattr(fd, TCSANOW, addr ts)
   project.registerProjectChange(onProjectChange)
-  addExitProc(shutdown)
+  atexit(shutdown)
   # prime the matcher with an initial sentinel so the first user run
   # has a clean boundary.
   let prime = theClShell.sentinel & "\n"
@@ -110,30 +114,17 @@ proc clShellInit*(workDir: string) =
 # ---------- escape stripping ----------
 
 proc stripCsi(s: string): string =
+  ## TERM=dumb; only handle CSI (`ESC [ ... <final>`), backspace, and CR.
   result = newStringOfCap(s.len)
   var i = 0
   while i < s.len:
     let c = s[i]
-    if c == '\x1b' and i + 1 < s.len:
-      let n = s[i+1]
-      if n == '[':
-        i += 2
-        while i < s.len:
-          let b = byte(s[i])
-          inc i
-          if b >= 0x40'u8 and b <= 0x7e'u8: break
-      elif n == ']':
-        i += 2
-        while i < s.len:
-          if s[i] == '\x07':
-            inc i; break
-          if s[i] == '\x1b' and i + 1 < s.len and s[i+1] == '\\':
-            i += 2; break
-          inc i
-      elif n in {'(', ')', '*', '+'}:
-        i += min(3, s.len - i)
-      else:
-        i += 2
+    if c == '\x1b' and i + 1 < s.len and s[i+1] == '[':
+      i += 2
+      while i < s.len:
+        let b = byte(s[i])
+        inc i
+        if b >= 0x40'u8 and b <= 0x7e'u8: break
     elif c == '\x08':
       if result.len > 0: result.setLen(result.len - 1)
       inc i
@@ -193,23 +184,16 @@ proc tryParseHit(line: string): (bool, GrepHit) =
 
 # ---------- grep provider ----------
 
-proc displayPath(abs: string): string =
-  let root = project.projectRoot
-  if root.len > 0 and abs.startsWith(root & "/"):
-    abs[root.len + 1 .. ^1]
-  else:
-    let h = getHomeDir()
-    if h.len > 0 and abs.startsWith(h):
-      "~/" & abs[h.len .. ^1]
-    else:
-      abs
-
-proc shortName(abs: string): string =
-  ## File at project root → bare filename.
-  ## Anywhere deeper → ".../filename".
+proc grepHeader(abs: string, full: bool): string =
+  ## Grep row title. `full` (Shift held) → root-relative or `~/...` path.
+  ## Otherwise → bare filename if at project root, `.../filename` deeper.
+  if full:
+    let root = project.projectRoot
+    if root.len > 0 and abs.startsWith(root & "/"):
+      return abs[root.len + 1 .. ^1]
+    return config.tildify(abs)
   let fname = extractFilename(abs)
-  let parent = parentDir(abs)
-  if project.projectRoot.len > 0 and parent == project.projectRoot:
+  if project.projectRoot.len > 0 and parentDir(abs) == project.projectRoot:
     return fname
   ".../" & fname
 
@@ -230,7 +214,7 @@ proc grepRowText(s: pointer, i: int): string {.nimcall.} =
   if hitIdx < 0 or hitIdx >= g.hits.len: return ""
   if (i mod 2) == 0:
     let h = g.hits[hitIdx]
-    let name = if theShiftHeld: displayPath(h.file) else: shortName(h.file)
+    let name = grepHeader(h.file, theShiftHeld)
     name & ":" & $h.line
   else:
     "  " & g.hits[hitIdx].text
@@ -258,7 +242,7 @@ proc grepPaintRow(s: pointer, i: int, p: ptr Painter, r: Rectangle, sel: bool) {
   drawBlock(p, r, bg)
   let h = g.hits[hitIdx]
   if not isSnippet:
-    let name = if theShiftHeld: displayPath(h.file) else: shortName(h.file)
+    let name = grepHeader(h.file, theShiftHeld)
     let label = name & ":" & $h.line
     let color = if pairSel: ui.theme.textSelected else: ui.theme.text
     drawString(p, r, label.cstring, label.len, color,
@@ -348,15 +332,19 @@ proc shellProvider(): Provider =
 proc clRowCount(s: pointer): int {.nimcall.} =
   cast[ptr ClShell](s).ringBuf.len
 
+proc ringAt(cs: ptr ClShell, i: int): string =
+  if cs.ringBuf.len < ringCap: cs.ringBuf[i]
+  else: cs.ringBuf[(cs.ringHead + i) mod ringCap]
+
 proc clRowText(s: pointer, i: int): string {.nimcall.} =
   let cs = cast[ptr ClShell](s)
   if i < 0 or i >= cs.ringBuf.len: ""
-  else: cs.ringBuf[i]
+  else: ringAt(cs, i)
 
 proc clOnSelect(s: pointer, i: int) {.nimcall.} =
   let cs = cast[ptr ClShell](s)
   if i < 0 or i >= cs.ringBuf.len: return
-  let (ok, hit) = tryParseHit(cs.ringBuf[i])
+  let (ok, hit) = tryParseHit(ringAt(cs, i))
   if ok:
     discard runCommand("editor.open", @[hit.file])
 
@@ -375,40 +363,31 @@ proc clProvider(): Provider =
 # ---------- pane swap ----------
 
 proc swapTo(prov: Provider) =
-  if theClPane == nil: return
-  if theClPane.current.name == prov.name:
-    paneResetSelection(theClPane)
-  else:
-    panePushProvider(theClPane, prov)
-  if theClPane.e.window != nil:
-    elementFocus(addr theClPane.e)
+  paneSwapTo(theClPane, prov)
 
 # ---------- run boundary ----------
 
 proc onSentinelLine() =
   let hadHits = theClShell.pendingHits.len > 0
-  let hadLines = theClShell.pendingLines.len > 0
-  if theClShell.expectGrepRun or hadHits:
-    # grep flow takes priority — file:line:col rows
+  if theClShell.state == crGrep or hadHits:
+    # grep flow batches: hits commit only at the boundary so the panel
+    # doesn't churn rows-by-rows while a long grep is still running.
     theGrepState.hits = theClShell.pendingHits
     swapTo(grepProvider())
-  elif theClShell.expectShellRun:
-    # shell fall-through — plain text rows (with click-to-open if a row
-    # happens to parse as path:line:col).
-    theShellState.lines = theClShell.pendingLines
-    swapTo(shellProvider())
+  # shell flow: lines already streamed into theShellState.lines via
+  # streamShellLine; panel already swapped at enterShellMode. Nothing to
+  # commit here — just drop the flags.
   theClShell.pendingHits.setLen(0)
-  theClShell.pendingLines.setLen(0)
-  theClShell.expectGrepRun = false
-  theClShell.expectShellRun = false
-  theClShell.running = false
+  theClShell.state = crIdle
 
 # ---------- drain ----------
 
 proc pushRingLine(line: string) =
-  theClShell.ringBuf.add(line)
-  while theClShell.ringBuf.len > ringCap:
-    theClShell.ringBuf.delete(0)
+  if theClShell.ringBuf.len < ringCap:
+    theClShell.ringBuf.add(line)
+  else:
+    theClShell.ringBuf[theClShell.ringHead] = line
+    theClShell.ringHead = (theClShell.ringHead + 1) mod ringCap
 
 proc stripPrompt(line: string): string =
   ## Bash interactive shells emit the prompt and the next command's output
@@ -433,12 +412,28 @@ proc isIgnoredPath(absPath: string): bool =
       if part == needle: return true
   false
 
+proc shellAutoScroll() =
+  if theClPane == nil or theClPane.e.window == nil: return
+  let gH = if ui.activeFont != nil: ui.activeFont.glyphHeight else: 16.cint
+  let h = theClPane.e.bounds.b - theClPane.e.bounds.t
+  let visibleN = max(1, int(h) div max(1, int(gH)))
+  let n = theShellState.lines.len
+  theClPane.topLine = max(0, n - visibleN)
+  elementRepaint(addr theClPane.e, nil)
+
+proc streamShellLine(body: string) =
+  theShellState.lines.add(body)
+  if theClPane == nil: return
+  if theClPane.current.name != "shell":
+    swapTo(shellProvider())
+  shellAutoScroll()
+
 proc onCompletedLine(raw: string) =
   let clean = stripCsi(raw)
   clLog("line: " & clean)
   if theClShell.sentinel.len > 0 and clean.contains(theClShell.sentinel):
     clLog("  -> sentinel boundary; pendingHits=" & $theClShell.pendingHits.len &
-          " expectGrep=" & $theClShell.expectGrepRun)
+          " state=" & $theClShell.state)
     onSentinelLine()
     return
   pushRingLine(clean)
@@ -450,8 +445,8 @@ proc onCompletedLine(raw: string) =
     else:
       clLog("  -> hit: " & hit.file & ":" & $hit.line)
       theClShell.pendingHits.add(hit)
-  if body.len > 0:
-    theClShell.pendingLines.add(body)
+  if body.len > 0 and theClShell.state == crShell:
+    streamShellLine(body)
 
 proc clShellDrain*() =
   if theClShell.fd < 0: return
@@ -500,10 +495,33 @@ proc resolveCdTarget(arg: string): string =
     return ""
   if dirExists(p): p else: ""
 
+proc enterShellMode(cmd: string) =
+  ## Set up state for a path-3 shell run, swap the panel to the shell
+  ## provider immediately (so the spinner has a destination before output
+  ## arrives), and write the command to the dedicated PTY. Output streams
+  ## live into the shell provider via `streamShellLine` from drain.
+  theClShell.state = crShell
+  theShellState.label = cmd
+  theShellState.lines = @[]
+  if theClPane != nil:
+    theClPane.selected = 0
+    theClPane.topLine = 0
+    swapTo(shellProvider())
+  clShellWrite(cmd)
+
 proc clDispatch*(line: string) =
   let trimmed = line.strip()
   if trimmed.len == 0: return
   clLog("dispatch: '" & trimmed & "' projectRoot=" & project.projectRoot)
+  # 0. `t ` prefix — escape hatch. Skip every hijack (registry alias,
+  # cd intercept, ls→files, etc.) and pipe the rest straight to the
+  # dedicated shell with live output streaming.
+  if trimmed.len > 2 and trimmed[0] == 't' and trimmed[1] == ' ':
+    let body = trimmed[2 .. ^1].strip()
+    if body.len == 0: return
+    clLog("  -> t-prefix shell: " & body)
+    enterShellMode(body)
+    return
   let parts = trimmed.splitWhitespace()
   let name = parts[0]
   let args = if parts.len > 1: parts[1 .. ^1] else: @[]
@@ -517,18 +535,12 @@ proc clDispatch*(line: string) =
     clLog("  -> cd intercept: target='" & target & "'")
     if target.len > 0:
       discard runCommand("project.load", @[target])
-      # project.load broadcasts to terminals (cd via termRunCmd). Send
-      # focus back to the feedback pane so the user can browse the
-      # refreshed tree without an extra Alt+H.
       if theClPane != nil and theClPane.e.window != nil:
         elementFocus(addr theClPane.e)
       return
-  # 3. fall through to the dedicated shell — capture output to the panel.
+  # 3. fall through to the dedicated shell — live-stream output.
   clLog("  -> shell fallthrough")
-  theClShell.expectShellRun = true
-  theClShell.running = true
-  theShellState.label = trimmed
-  clShellWrite(trimmed)
+  enterShellMode(trimmed)
 
 # ---------- install ----------
 
@@ -546,8 +558,7 @@ proc cmdGrep(args: seq[string]) =
   if patternParts.len == 0: return
   let pattern = patternParts.join(" ")
   theGrepState.lastQuery = pattern
-  theClShell.expectGrepRun = true
-  theClShell.running = true
+  theClShell.state = crGrep
   var cmd = "grep -rn --color=never"
   for ignore in config.grepIgnore:
     cmd.add(" --exclude-dir=" & quoteShell(ignore))
@@ -560,14 +571,23 @@ proc clShellInstall*(pane: ptr ResultsPane) =
   commands.clDispatchCb = proc(line: string) = clDispatch(line)
   registerCommand("cl", proc(args: seq[string]) = swapTo(clProvider()))
   registerCommand("grep", cmdGrep)
+  # Hijack `ls` → `files`. Registry runs before the shell fall-through, so
+  # typing `ls` (with or without args) lands on the tree provider instead.
+  # Escape hatch: invoke the real binary via `/bin/ls`, which doesn't
+  # match the registered name and falls through to the dedicated shell.
+  registerCommand("ls", proc(args: seq[string]) =
+    if args.len == 0:
+      discard runCommand("files")
+    else:
+      enterShellMode("ls " & args.join(" ")))
 
 # ---------- spinner ----------
 
-proc clShellRunning*(): bool = theClShell.running
+proc clShellRunning*(): bool = theClShell.state != crIdle
 
 proc clShellSpinnerChar*(): char =
   const frames: array[4, char] = ['|', '/', '-', '\\']
-  let idx = (getMonoTime().ticks div 100_000_000) mod 4
+  let idx = (monoNs() div 100_000_000) mod 4
   frames[int(idx)]
 
 # ---------- shift polling (drives the grep header path expansion) ----------

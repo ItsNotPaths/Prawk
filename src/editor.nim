@@ -1,5 +1,5 @@
 import std/[os, strutils]
-import luigi, config
+import luigi, config, font
 
 type
   EditorBuf = object
@@ -14,12 +14,6 @@ type
     buf: EditorBuf
 
 var theEditor*: ptr Editor
-
-proc glyphDims(): (cint, cint) =
-  if ui.activeFont != nil:
-    (ui.activeFont.glyphWidth, ui.activeFont.glyphHeight)
-  else:
-    (9.cint, 16.cint)
 
 proc visibleRows(ed: ptr Editor): int =
   let (_, gH) = glyphDims()

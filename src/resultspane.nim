@@ -1,4 +1,4 @@
-import luigi
+import luigi, font
 
 type
   Provider* = object
@@ -23,12 +23,6 @@ type
     selected*, topLine*: int
 
 var thePane*: ptr ResultsPane
-
-proc glyphDims(): (cint, cint) =
-  if ui.activeFont != nil:
-    (ui.activeFont.glyphWidth, ui.activeFont.glyphHeight)
-  else:
-    (9.cint, 16.cint)
 
 proc visibleRows(p: ptr ResultsPane): int =
   let (_, gH) = glyphDims()
@@ -62,6 +56,7 @@ proc paneResetSelection*(p: ptr ResultsPane) =
 
 proc paneSetProvider*(p: ptr ResultsPane, prov: Provider) =
   p.current = prov
+  p.stack.setLen(0)
   p.selected = 0
   p.topLine = 0
   if p.e.window != nil:
@@ -76,6 +71,17 @@ proc panePushProvider*(p: ptr ResultsPane, prov: Provider) =
   p.topLine = 0
   if p.e.window != nil:
     elementRepaint(addr p.e, nil)
+
+proc paneSwapTo*(p: ptr ResultsPane, prov: Provider) =
+  ## Push prov on top, or just reset selection if prov is already current.
+  ## Always re-focuses the pane.
+  if p == nil: return
+  if p.current.name == prov.name:
+    paneResetSelection(p)
+  else:
+    panePushProvider(p, prov)
+  if p.e.window != nil:
+    elementFocus(addr p.e)
 
 proc panePopProvider*(p: ptr ResultsPane): bool =
   if p.stack.len == 0: return false

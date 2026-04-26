@@ -71,9 +71,6 @@ let
 
 template KEYCODE_LETTER*(x: char): int = int(KEYCODE_A) + (int(x) - int('A'))
 
-# Sentinel byte-count for "use strlen" in luigi string-taking procs (ptrdiff_t -1).
-const castInt* = -1
-
 # ---------- structs ----------
 
 type
@@ -213,16 +210,16 @@ proc panelCreate*(parent: ptr Element; flags: uint32): ptr Panel
 proc splitPaneCreate*(parent: ptr Element; flags: uint32; weight: cfloat): ptr SplitPane
                   {.cdecl, lH, importc: "UISplitPaneCreate".}
 proc labelCreate*(parent: ptr Element; flags: uint32; label: cstring;
-                  labelBytes: int = castInt): ptr Label
+                  labelBytes: int = -1): ptr Label
                   {.cdecl, lH, importc: "UILabelCreate".}
 proc buttonCreate*(parent: ptr Element; flags: uint32; label: cstring;
-                   labelBytes: int = castInt): ptr Button
+                   labelBytes: int = -1): ptr Button
                   {.cdecl, lH, importc: "UIButtonCreate".}
 
 proc menuCreate*(parent: ptr Element; flags: uint32): ptr Menu
                   {.cdecl, lH, importc: "UIMenuCreate".}
 proc menuAddItem*(menu: ptr Menu; flags: uint32; label: cstring;
-                  labelBytes: int = castInt;
+                  labelBytes: int = -1;
                   invoke: proc (cp: pointer) {.cdecl.};
                   cp: pointer = nil)
                   {.cdecl, lH, importc: "UIMenuAddItem".}
@@ -235,13 +232,13 @@ proc drawInvert*(p: ptr Painter; r: Rectangle)
 proc drawBorder*(p: ptr Painter; r: Rectangle; borderColor: uint32;
                  borderSize: Rectangle)
                   {.cdecl, lH, importc: "UIDrawBorder".}
-proc drawString*(p: ptr Painter; r: Rectangle; s: cstring; bytes: int = castInt;
+proc drawString*(p: ptr Painter; r: Rectangle; s: cstring; bytes: int = -1;
                  color: uint32; align: cint; selection: ptr StringSelection = nil)
                   {.cdecl, lH, importc: "UIDrawString".}
 proc drawStringHighlighted*(p: ptr Painter; r: Rectangle; s: cstring;
-                            bytes: int = castInt; tabSize: cint): cint
+                            bytes: int = -1; tabSize: cint): cint
                   {.cdecl, lH, importc: "UIDrawStringHighlighted".}
-proc measureStringWidth*(s: cstring; bytes: int = castInt): cint
+proc measureStringWidth*(s: cstring; bytes: int = -1): cint
                   {.cdecl, lH, importc: "UIMeasureStringWidth".}
 
 proc fontCreate*(cPath: cstring; size: uint32): ptr Font

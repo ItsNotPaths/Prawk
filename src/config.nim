@@ -1,4 +1,4 @@
-import std/[os, strutils, sequtils]
+import std/[os, strutils]
 
 type
   TabMode* = enum tmSpaces2, tmSpaces4, tmTab
@@ -10,6 +10,13 @@ var
   initialTermIdx*: int = 0
   initialTerminals*: int = 2
   grepIgnore*: seq[string] = @[]
+
+proc tildify*(p: string): string =
+  let h = getHomeDir()
+  if h.len > 0 and p.startsWith(h):
+    "~/" & p[h.len .. ^1]
+  else:
+    p
 
 proc indentString*(): string =
   case tabMode
@@ -79,7 +86,10 @@ proc pushRecent*(name, path: string) =
   if path.len == 0: return
   let abs = absolutePath(path)
   var list = readRecents(name)
-  list.keepItIf(it != abs)
+  var kept: seq[string]
+  for it in list:
+    if it != abs: kept.add(it)
+  list = kept
   list.insert(abs, 0)
   if list.len > 10: list.setLen(10)
   writeRecents(name, list)

@@ -3,5 +3,5 @@ switch("panics", "on")
 
 when defined(release):
   switch("opt", "size")
-  switch("passC", "-Os -ffunction-sections -fdata-sections -fno-strict-aliasing")
-  switch("passL", "-s -Wl,--gc-sections -Wl,--as-needed")
+  switch("passC", "-Os -flto -ffunction-sections -fdata-sections -fno-strict-aliasing -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-stack-protector")
+  switch("passL", "-flto -s -Wl,--gc-sections -Wl,--as-needed")

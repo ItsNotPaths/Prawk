@@ -13,9 +13,15 @@ proc systemMonoPath(): string =
       let p = output.strip()
       if p.len > 0 and fileExists(p):
         return p
-  except OSError, CatchableError:
+  except CatchableError:
     discard
   return ""
+
+proc glyphDims*(): (cint, cint) =
+  if ui.activeFont != nil:
+    (ui.activeFont.glyphWidth, ui.activeFont.glyphHeight)
+  else:
+    (9.cint, 16.cint)
 
 proc loadFont*(size: uint32 = defaultSize) =
   let path = systemMonoPath()
