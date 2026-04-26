@@ -145,10 +145,13 @@ Other state:
 
 ## Themes & syntax
 
-Both are embedded at compile time. To add one, drop a file in `themes/` (`.theme`)
-or `syntax/` (`.conf`), add it to the manifest in `theme.nim` / `highlight.nim`,
-and rebuild. Built-in: `default`, `zenburn` themes; `nim`, `c`, `python`, `js`,
-`diff` grammars.
+**Themes** are loaded at runtime from the `themes/` folder next to the binary —
+drop a `.theme` file in there and it shows up in `:theme <name>` and the View
+menu. Ships with `default` and `zenburn`.
+
+**Syntax** grammars are embedded at compile time. Built-in: `nim`, `c`, `python`,
+`js`, `diff`. To add a language, drop a `.conf` in `syntax/`, register it in
+`highlight.nim`, and open a PR on GitHub.
 
 ## Build
 
