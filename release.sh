@@ -48,6 +48,10 @@ if [ $DO_LOCAL -eq 1 ]; then
 
     [ -f "$PROJECT_DIR/README.md" ] && cp -f "$PROJECT_DIR/README.md" "$RELEASE_DIR/" || true
     [ -f "$PROJECT_DIR/LICENSE" ]   && cp -f "$PROJECT_DIR/LICENSE"   "$RELEASE_DIR/" || true
+    if [ -d "$PROJECT_DIR/themes" ]; then
+        rm -rf "$RELEASE_DIR/themes"
+        cp -R "$PROJECT_DIR/themes" "$RELEASE_DIR/themes"
+    fi
 
     SIZE=$(du -h "$BIN" | cut -f1)
     echo "==> Local done: $BIN (${SIZE})"

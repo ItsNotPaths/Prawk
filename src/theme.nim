@@ -1,4 +1,4 @@
-import std/strutils
+import std/[os, strutils, algorithm]
 import luigi
 
 type Palette* = object
@@ -29,15 +29,22 @@ const gruvboxMaterialDark* = Palette(
   codeReturnType: 0x89b482'u32,
 )
 
-template embedTheme(n: untyped): (string, string) =
-  (astToStr(n), staticRead("../themes/" & astToStr(n) & ".theme"))
+var
+  activeTheme*: string = "default"
+  discoveredThemes: seq[string]
 
-const builtinThemes*: array[2, (string, string)] = [
-  embedTheme(default),
-  embedTheme(zenburn),
-]
+proc themesDir(): string = getAppDir() / "themes"
 
-var activeTheme*: string = "default"
+proc discoverThemes*() =
+  discoveredThemes.setLen(0)
+  let dir = themesDir()
+  if not dirExists(dir): return
+  for kind, path in walkDir(dir, relative = true):
+    if kind != pcFile: continue
+    let (_, name, ext) = splitFile(path)
+    if ext == ".theme" and name.len > 0:
+      discoveredThemes.add(name)
+  sort(discoveredThemes, system.cmp)
 
 proc parseHex(s: string): uint32 =
   let t = s.strip().strip(chars = {'#'})
@@ -97,20 +104,23 @@ proc apply(p: Palette) =
   currentPalette = p
 
 proc themeNames*(): seq[string] =
-  result = @[]
-  for (n, _) in builtinThemes: result.add(n)
+  discoverThemes()
+  result = discoveredThemes
 
 proc loadThemeByName*(name: string): bool =
-  for (n, body) in builtinThemes:
-    if n == name:
-      var p = gruvboxMaterialDark
-      discard parsePalette(body, p)
-      apply(p)
-      activeTheme = name
-      return true
-  return false
+  let path = themesDir() / (name & ".theme")
+  if not fileExists(path): return false
+  var body: string
+  try: body = readFile(path)
+  except IOError: return false
+  var p = gruvboxMaterialDark
+  discard parsePalette(body, p)
+  apply(p)
+  activeTheme = name
+  return true
 
 proc loadInitialTheme*() =
+  discoverThemes()
   if not loadThemeByName(activeTheme):
     apply(gruvboxMaterialDark)
     activeTheme = "default"
