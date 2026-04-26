@@ -130,7 +130,7 @@ proc treeOnKey(s: pointer, code: cint, ctrl, shift: bool): bool {.nimcall.} =
     return true
   false
 
-proc treeProvider(): Provider =
+proc treeProvider*(): Provider =
   Provider(
     state: cast[pointer](addr theTreeState),
     name: "files",
@@ -142,10 +142,18 @@ proc treeProvider(): Provider =
     onKey: treeOnKey,
     onBack: nil)
 
+proc swapBackToTree(args: seq[string]) =
+  if theTreePane == nil: return
+  paneSetProvider(theTreePane, treeProvider())
+  if theTreePane.e.window != nil:
+    elementFocus(addr theTreePane.e)
+
 proc treeInstall*(pane: ptr ResultsPane) =
   theTreePane = pane
   rebuildRoot(addr theTreeState)
   paneSetProvider(pane, treeProvider())
+  registerCommand("files", swapBackToTree)
+  registerCommand("tree", swapBackToTree)
   project.registerProjectChange(proc() =
     rebuildRoot(addr theTreeState)
     if theTreePane != nil:

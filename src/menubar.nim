@@ -1,5 +1,5 @@
 import std/strutils
-import luigi, commands, config
+import luigi, commands, config, clshell
 
 type
   MenuOption = object
@@ -178,12 +178,9 @@ proc paletteOpenCb*(cp: pointer) {.cdecl.} =
 
 proc executePalette(mb: ptr Menubar) =
   let line = mb.palBuf.strip()
-  if line.len > 0:
-    let parts = line.splitWhitespace()
-    let name = parts[0]
-    let args = if parts.len > 1: parts[1 .. ^1] else: @[]
-    discard runCommand(name, args)
   exitPalette(mb)
+  if line.len > 0 and commands.clDispatchCb != nil:
+    commands.clDispatchCb(line)
 
 proc menubarMessage(element: ptr Element, message: Message, di: cint, dp: pointer): cint {.cdecl.} =
   let mb = cast[ptr Menubar](element)
@@ -194,17 +191,28 @@ proc menubarMessage(element: ptr Element, message: Message, di: cint, dp: pointe
 
   elif message == msgPaint:
     let painter = cast[ptr Painter](dp)
+    let gW = if ui.activeFont != nil: ui.activeFont.glyphWidth else: 9.cint
     if mb.palette:
       drawBlock(painter, element.bounds, ui.theme.textboxFocused)
+      var leftX = element.bounds.l + padX
+      if clShellRunning():
+        var spinBuf: array[2, char]
+        spinBuf[0] = clShellSpinnerChar()
+        spinBuf[1] = '\0'
+        drawString(painter,
+                   Rectangle(l: leftX, r: leftX + gW,
+                             t: element.bounds.t, b: element.bounds.b),
+                   cast[cstring](addr spinBuf[0]), 1,
+                   ui.theme.text, cint(ALIGN_LEFT), nil)
+        leftX += gW + 4
       let txt = ":" & mb.palBuf
       let promptRect = Rectangle(
-        l: element.bounds.l + padX, r: element.bounds.r,
+        l: leftX, r: element.bounds.r,
         t: element.bounds.t, b: element.bounds.b)
       drawString(painter, promptRect, txt.cstring, txt.len,
                  ui.theme.text, cint(ALIGN_LEFT), nil)
       let textW = measureStringWidth(txt.cstring, txt.len)
-      let gW = if ui.activeFont != nil: ui.activeFont.glyphWidth else: 9.cint
-      let cx = element.bounds.l + padX + textW
+      let cx = leftX + textW
       drawInvert(painter, Rectangle(
         l: cx, r: cx + gW,
         t: element.bounds.t + padY, b: element.bounds.b - padY))
@@ -222,6 +230,16 @@ proc menubarMessage(element: ptr Element, message: Message, di: cint, dp: pointe
       mb.items[i].x = x - element.bounds.l
       mb.items[i].w = w
       x += w
+    if clShellRunning():
+      var spinBuf: array[2, char]
+      spinBuf[0] = clShellSpinnerChar()
+      spinBuf[1] = '\0'
+      let sx = x + padX
+      drawString(painter,
+                 Rectangle(l: sx, r: sx + gW,
+                           t: element.bounds.t, b: element.bounds.b),
+                 cast[cstring](addr spinBuf[0]), 1,
+                 ui.theme.text, cint(ALIGN_LEFT), nil)
     return 1
 
   elif message == msgKeyTyped:

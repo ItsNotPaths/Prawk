@@ -19,7 +19,8 @@ proc setNonBlocking(fd: cint) =
   let flags = fcntl(fd, F_GETFL, 0)
   discard fcntl(fd, F_SETFL, flags or O_NONBLOCK)
 
-proc startShell*(rows, cols: int, workDir: string = ""): tuple[fd: cint, pid: Pid] =
+proc startShell*(rows, cols: int, workDir: string = "",
+                 term: string = "ansi"): tuple[fd: cint, pid: Pid] =
   var ws = WinSize(ws_row: rows.cushort, ws_col: cols.cushort)
   var fd: cint = -1
   let pid = forkpty(addr fd, nil, nil, addr ws)
@@ -30,7 +31,7 @@ proc startShell*(rows, cols: int, workDir: string = ""): tuple[fd: cint, pid: Pi
     if workDir.len > 0:
       discard chdir(workDir.cstring)
     let shell = getEnv("SHELL", "/bin/sh")
-    putEnv("TERM", "ansi")
+    putEnv("TERM", term)
     var argv = allocCStringArray([shell, "-i"])
     discard execvp(shell.cstring, argv)
     quit(1)

@@ -1,5 +1,5 @@
 import luigi
-import term, pump, editor, menubar, tree, config, resultspane, terminalstack
+import term, pump, editor, menubar, tree, providers, config, resultspane, terminalstack, clshell, project
 export luigi, editor, menubar
 
 var
@@ -111,6 +111,9 @@ proc buildUi*(): UiRefs =
   result.pane = paneCreate(addr result.sidebarSplit.e)
   result.gitPane = stubPanel(addr result.sidebarSplit.e, "git (later)")
   treeInstall(result.pane)
+  providersInstall(result.pane)
+  clShellInit(project.projectRoot)
+  clShellInstall(result.pane)
 
   # innerSplit: editor | terminal-stack
   result.innerSplit = splitPaneCreate(addr result.rootSplit.e, 0, 0.65)
@@ -141,7 +144,7 @@ proc buildUi*(): UiRefs =
   let mbCp = cast[pointer](result.menubar)
   let stackCp = cast[pointer](result.termStack)
   windowRegisterShortcut(result.window, Shortcut(
-    code: int(KEYCODE_LETTER('D')), alt: true,
+    code: int(KEYCODE_LETTER('C')), alt: true,
     invoke: paletteOpenCb, cp: mbCp))
   windowRegisterShortcut(result.window, Shortcut(
     code: int(KEYCODE_LETTER('F')), alt: true,

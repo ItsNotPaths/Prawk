@@ -9,6 +9,7 @@ var
   initialFocus*: FocusTarget = ftTerm
   initialTermIdx*: int = 0
   initialTerminals*: int = 2
+  grepIgnore*: seq[string] = @[]
 
 proc indentString*(): string =
   case tabMode
@@ -49,6 +50,11 @@ proc loadConfig*() =
         let n = parseInt(val)
         if n >= 1: initialTerminals = n
       except ValueError: discard
+    of "grep_ignore":
+      grepIgnore = @[]
+      for raw in val.split(','):
+        let s = raw.strip()
+        if s.len > 0: grepIgnore.add(s)
     else: discard
 
 proc readRecents*(name: string): seq[string] =

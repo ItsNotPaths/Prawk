@@ -1,5 +1,5 @@
 import std/[os, strutils]
-import project, editor, term, terminalstack
+import luigi, project, editor, terminalstack
 
 type
   CmdProc* = proc (args: seq[string]) {.closure.}
@@ -10,6 +10,7 @@ type
 var
   registry*: seq[Command]
   openPaletteWithCb*: proc(text: string) {.closure.}
+  clDispatchCb*: proc(line: string) {.closure.}
 
 proc registerCommand*(name: string, p: CmdProc) =
   for i in 0 ..< registry.len:
@@ -43,15 +44,6 @@ proc cmdEditorSave(args: seq[string]) =
 
 proc cmdQuit(args: seq[string]) =
   quit(0)
-
-proc cmdHelp(args: seq[string]) =
-  # TODO Pass 5: route :help output to results pane
-  let t = stackFocusedTerminal(theTermStack)
-  if t == nil: return
-  var buf = "\r\nprawk commands:\r\n"
-  for c in registry:
-    buf.add("  " & c.name & "\r\n")
-  termWrite(t, buf)
 
 proc cmdEditorOpen(args: seq[string]) =
   if args.len < 1: return
@@ -100,7 +92,6 @@ proc registerBuiltins*() =
   registerCommand("editor.open", cmdEditorOpen)
   registerCommand("editor.open.force", cmdEditorOpenForce)
   registerCommand("quit", cmdQuit)
-  registerCommand("help", cmdHelp)
   registerCommand("term.new", cmdTermNew)
   registerCommand("term.kill", cmdTermKill)
   registerCommand("term.name", cmdTermName)
