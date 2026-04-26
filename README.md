@@ -1,6 +1,6 @@
 # prawk
 
-A tiny X11 dev environment: file tree, tabbed editor with syntax highlighting, N
+A tiny X11 dev environment using nakst/luigi.c: file tree, tabbed editor with syntax highlighting, N
 embedded terminals, a git pane, and a master command-line. Linux x86_64. ~250 KB
 stripped binary, single file. Runtime deps: `libX11`, `libfreetype.so.6`, `git`,
 `xclip`, `fc-match`.
@@ -14,20 +14,6 @@ stripped binary, single file. Runtime deps: `libX11`, `libfreetype.so.6`, `git`,
 ```
 
 Config (optional): `~/.config/prawk/config` — see [Config](#config) below.
-
-## Layout
-
-```
-+---- menubar (File / Edit / View) | CL prompt -----+
-| sidebar  | editor tabs           | terminal stack |
-| (tree /  +-----------------------+   t1           |
-|  results)|        editor         |   t2           |
-| git pane |                       |   ...          |
-+----------+-----------------------+----------------+
-```
-
-Three columns. Alt+H/L crosses columns; Alt+J/K moves within the sidebar /
-terminal stack.
 
 ## Keybinds
 
@@ -57,6 +43,11 @@ The CL is a real shell pinned to the project root (its own headless PTY). Bare
 `cd <path>` reloads the project; `cd foo && cmd` and other chains run as shell.
 Output flowing through it is parsed for `path:line[:col]:text` hits and shown in
 a `grep` results pane.
+
+**Escape hatch**: prefix any line with `t ` to skip every hijack (registered
+commands, `cd` intercept, `ls`→files, etc.) and pipe the rest straight to the
+shell. E.g. `t ls` lists the cwd literally instead of swapping to the file
+provider.
 
 ### Editor
 | Key | Action |
@@ -96,8 +87,6 @@ a `grep` results pane.
 | `Left` / `Right` | Cycle branch tabs |
 
 ## Commands
-
-Type with leading `:` from the CL.
 
 | Command | What it does |
 |---|---|
