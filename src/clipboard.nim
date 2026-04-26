@@ -1,5 +1,10 @@
-## Clipboard shell-out via xclip. No xclip → silent no-op (the user simply
-## doesn't get paste; copy is a stub for now anyway).
+## Clipboard shell-out via xclip. No xclip → silent no-op.
+##
+## X11 has two independent selections:
+##   CLIPBOARD — the explicit-copy buffer (Ctrl+C / Ctrl+V).
+##   PRIMARY   — the just-selected buffer (highlight → middle-click paste).
+## Native apps write to both: PRIMARY on selection finalize, CLIPBOARD on
+## explicit copy. We mirror that contract.
 
 import std/[osproc, streams]
 
@@ -14,14 +19,24 @@ proc clipboardGet*(): string =
   except CatchableError:
     discard
 
-proc clipboardSet*(s: string) =
-  ## Wired but unused until we ship terminal/editor selection. Kept here
-  ## so the eventual copy bindings can call into a single place.
+proc writeSelection(sel: string, s: string) =
   try:
-    let p = startProcess("xclip", args = ["-selection", "clipboard", "-i"],
+    let p = startProcess("xclip", args = ["-selection", sel, "-i"],
                         options = {poUsePath})
     p.inputStream.write(s)
     p.inputStream.close()
     discard p.waitForExit()
   except CatchableError:
     discard
+
+proc clipboardSet*(s: string) =
+  ## Explicit-copy target (Ctrl+C / Ctrl+Shift+C path).
+  writeSelection("clipboard", s)
+
+proc clipboardSetPrimary*(s: string) =
+  ## Selection-finalize target (mouse-up / shift+arrow). Middle-click pastes.
+  writeSelection("primary", s)
+
+proc clipboardSetBoth*(s: string) =
+  clipboardSet(s)
+  clipboardSetPrimary(s)

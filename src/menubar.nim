@@ -19,6 +19,9 @@ type
     prevFocus: ptr Element
     palette*: bool
     palBuf: string
+    palCursor: int     # byte index into palBuf (0..palBuf.len)
+    palAnchor: int     # selection anchor; meaningful when hasPalSel
+    hasPalSel: bool
     menuOpen: bool
 
 var theMenubar*: ptr Menubar
@@ -164,11 +167,65 @@ proc openEditMenuCb*(cp: pointer) {.cdecl.} =
 proc openViewMenuCb*(cp: pointer) {.cdecl.} =
   if cp != nil: spawnMenu(cast[ptr Menubar](cp), 2)
 
+proc resetPalState(mb: ptr Menubar) =
+  mb.palBuf = ""
+  mb.palCursor = 0
+  mb.palAnchor = 0
+  mb.hasPalSel = false
+
+proc palSelRange(mb: ptr Menubar): tuple[lo, hi: int] =
+  let a = mb.palAnchor
+  let c = mb.palCursor
+  if a <= c: (a, c) else: (c, a)
+
+proc palSelText(mb: ptr Menubar): string =
+  if not mb.hasPalSel: return ""
+  let (lo, hi) = palSelRange(mb)
+  let l = max(0, min(lo, mb.palBuf.len))
+  let h = max(l, min(hi, mb.palBuf.len))
+  mb.palBuf.substr(l, h - 1)
+
+proc palDeleteSelection(mb: ptr Menubar) =
+  if not mb.hasPalSel: return
+  let (lo, hi) = palSelRange(mb)
+  let l = max(0, min(lo, mb.palBuf.len))
+  let h = max(l, min(hi, mb.palBuf.len))
+  let head = if l <= 0: "" else: mb.palBuf.substr(0, l - 1)
+  let tail = if h >= mb.palBuf.len: "" else: mb.palBuf.substr(h)
+  mb.palBuf = head & tail
+  mb.palCursor = l
+  mb.hasPalSel = false
+
+proc palClampCursor(mb: ptr Menubar) =
+  if mb.palCursor < 0: mb.palCursor = 0
+  if mb.palCursor > mb.palBuf.len: mb.palCursor = mb.palBuf.len
+
+proc palByteFromX(mb: ptr Menubar, winX: cint): int =
+  ## Convert a window-relative pixel X to a byte index in palBuf. Accounts for
+  ## the leading `:` prompt and the optional spinner glyph that paint draws
+  ## at the same offset. Monospace font, so plain division is fine.
+  let (gW, _) = glyphDims()
+  var leftX = mb.e.bounds.l + padX
+  if clShellRunning():
+    leftX += gW + 4
+  let relX = max(cint(0), winX - leftX - gW)   # subtract prompt ":" width
+  let cells = int((relX + gW div 2) div max(cint(1), gW))   # round to nearest cell
+  max(0, min(mb.palBuf.len, cells))
+
+proc palInsert(mb: ptr Menubar, s: string) =
+  if s.len == 0: return
+  if mb.hasPalSel: palDeleteSelection(mb)
+  palClampCursor(mb)
+  let head = if mb.palCursor <= 0: "" else: mb.palBuf.substr(0, mb.palCursor - 1)
+  let tail = if mb.palCursor >= mb.palBuf.len: "" else: mb.palBuf.substr(mb.palCursor)
+  mb.palBuf = head & s & tail
+  mb.palCursor += s.len
+
 proc enterPalette*(mb: ptr Menubar) =
   if mb.palette: return
   discard menusClose()
   mb.palette = true
-  mb.palBuf = ""
+  resetPalState(mb)
   if mb.e.window != nil:
     mb.prevFocus = mb.e.window.focused
   elementFocus(addr mb.e)
@@ -177,7 +234,7 @@ proc enterPalette*(mb: ptr Menubar) =
 proc exitPalette*(mb: ptr Menubar) =
   if not mb.palette: return
   mb.palette = false
-  mb.palBuf = ""
+  resetPalState(mb)
   let prev = mb.prevFocus
   mb.prevFocus = nil
   if prev != nil:
@@ -222,10 +279,21 @@ proc menubarMessage(element: ptr Element, message: Message, di: cint, dp: pointe
       let promptRect = Rectangle(
         l: leftX, r: element.bounds.r,
         t: element.bounds.t, b: element.bounds.b)
+      # Selection rect drawn under the text so glyphs remain readable.
+      if mb.hasPalSel:
+        let (lo, hi) = palSelRange(mb)
+        let prefix = ":" & mb.palBuf.substr(0, lo - 1)
+        let body   = mb.palBuf.substr(lo, hi - 1)
+        let lx = leftX + measureStringWidth(prefix.cstring, prefix.len)
+        let rx = lx + measureStringWidth(body.cstring, body.len)
+        drawBlock(painter, Rectangle(
+          l: lx, r: rx,
+          t: element.bounds.t + padY, b: element.bounds.b - padY),
+          ui.theme.selected)
       drawString(painter, promptRect, txt.cstring, txt.len,
                  ui.theme.text, cint(ALIGN_LEFT), nil)
-      let textW = measureStringWidth(txt.cstring, txt.len)
-      let cx = leftX + textW
+      let beforeCursor = ":" & mb.palBuf.substr(0, mb.palCursor - 1)
+      let cx = leftX + measureStringWidth(beforeCursor.cstring, beforeCursor.len)
       drawInvert(painter, Rectangle(
         l: cx, r: cx + gW,
         t: element.bounds.t + padY, b: element.bounds.b - padY))
@@ -274,35 +342,95 @@ proc menubarMessage(element: ptr Element, message: Message, di: cint, dp: pointe
     let win = element.window
     let ctrl  = (win != nil and win.ctrl)
     let shift = (win != nil and win.shift)
+
+    let preCursor = mb.palCursor
+
+    template motionStart() =
+      if shift:
+        if not mb.hasPalSel:
+          mb.palAnchor = preCursor
+          mb.hasPalSel = true
+      else:
+        mb.hasPalSel = false
+
+    template motionEnd() =
+      if mb.hasPalSel and mb.palAnchor == mb.palCursor:
+        mb.hasPalSel = false
+      if mb.hasPalSel:
+        clipboardSetPrimary(palSelText(mb))
+
     if ctrl and code == int(KEYCODE_LETTER('C')):
       if shift:
         clShellInterrupt()
-      # else: stub copy
+      elif mb.hasPalSel:
+        clipboardSetBoth(palSelText(mb))
+      return 1
+    if ctrl and code == int(KEYCODE_LETTER('A')):
+      # Select all (Ctrl+A) — there's no Emacs line-start binding to clobber
+      # in the single-line palette, so we use the standard shortcut.
+      if mb.palBuf.len > 0:
+        mb.palAnchor = 0
+        mb.palCursor = mb.palBuf.len
+        mb.hasPalSel = true
+        clipboardSetPrimary(palSelText(mb))
+        elementRepaint(element, nil)
       return 1
     if ctrl and code == int(KEYCODE_LETTER('V')):
       let txt = clipboardGet()
       if txt.len > 0:
-        # Single-line paste only — newlines in the palette would just look
-        # like garbage in a one-line prompt. Stop at the first \n.
         let nl = txt.find('\n')
         let body = if nl >= 0: txt[0 ..< nl] else: txt
         if body.len > 0:
-          mb.palBuf.add(body)
+          palInsert(mb, body)
           elementRepaint(element, nil)
       return 1
     if code == int(KEYCODE_ESCAPE):
       exitPalette(mb); return 1
     if code == int(KEYCODE_ENTER):
       executePalette(mb); return 1
+    if code == int(KEYCODE_LEFT):
+      motionStart()
+      if mb.palCursor > 0: dec mb.palCursor
+      motionEnd()
+      elementRepaint(element, nil)
+      return 1
+    if code == int(KEYCODE_RIGHT):
+      motionStart()
+      if mb.palCursor < mb.palBuf.len: inc mb.palCursor
+      motionEnd()
+      elementRepaint(element, nil)
+      return 1
+    if code == int(KEYCODE_HOME):
+      motionStart(); mb.palCursor = 0; motionEnd()
+      elementRepaint(element, nil)
+      return 1
+    if code == int(KEYCODE_END):
+      motionStart(); mb.palCursor = mb.palBuf.len; motionEnd()
+      elementRepaint(element, nil)
+      return 1
     if code == int(KEYCODE_BACKSPACE):
-      if mb.palBuf.len > 0:
-        mb.palBuf.setLen(mb.palBuf.len - 1)
-        elementRepaint(element, nil)
+      if mb.hasPalSel:
+        palDeleteSelection(mb)
+      elif mb.palCursor > 0:
+        let head = if mb.palCursor <= 1: "" else: mb.palBuf.substr(0, mb.palCursor - 2)
+        let tail = if mb.palCursor >= mb.palBuf.len: "" else: mb.palBuf.substr(mb.palCursor)
+        mb.palBuf = head & tail
+        dec mb.palCursor
+      elementRepaint(element, nil)
+      return 1
+    if code == int(KEYCODE_DELETE):
+      if mb.hasPalSel:
+        palDeleteSelection(mb)
+      elif mb.palCursor < mb.palBuf.len:
+        let head = if mb.palCursor <= 0: "" else: mb.palBuf.substr(0, mb.palCursor - 1)
+        let tail = if mb.palCursor + 1 >= mb.palBuf.len: "" else: mb.palBuf.substr(mb.palCursor + 1)
+        mb.palBuf = head & tail
+      elementRepaint(element, nil)
       return 1
     if k.textBytes > 0:
       var s = newString(int(k.textBytes))
       copyMem(addr s[0], k.text, int(k.textBytes))
-      mb.palBuf.add(s)
+      palInsert(mb, s)
       elementRepaint(element, nil)
       return 1
     return 1
@@ -319,13 +447,29 @@ proc menubarMessage(element: ptr Element, message: Message, di: cint, dp: pointe
     return 0
 
   elif message == msgLeftDown:
-    if mb.palette: return 0
     let w = element.window
     if w == nil: return 0
+    if mb.palette:
+      mb.palCursor = palByteFromX(mb, w.cursorX)
+      mb.palAnchor = mb.palCursor
+      mb.hasPalSel = false
+      elementRepaint(element, nil)
+      return 1
     let lx = w.cursorX - element.bounds.l
     let h = hitItem(mb, lx)
     if h < 0: return 0
     spawnMenu(mb, h)
+    return 1
+
+  elif message == msgMouseDrag:
+    if not mb.palette: return 0
+    let w = element.window
+    if w == nil: return 0
+    mb.palCursor = palByteFromX(mb, w.cursorX)
+    mb.hasPalSel = (mb.palCursor != mb.palAnchor)
+    if mb.hasPalSel:
+      clipboardSetPrimary(palSelText(mb))
+    elementRepaint(element, nil)
     return 1
 
   return 0
@@ -334,6 +478,7 @@ proc openPaletteWith*(text: string) =
   if theMenubar == nil: return
   enterPalette(theMenubar)
   theMenubar.palBuf = text
+  theMenubar.palCursor = text.len
   elementRepaint(addr theMenubar.e, nil)
 
 proc menubarCreate*(parent: ptr Element, flags: uint32 = 0): ptr Menubar =

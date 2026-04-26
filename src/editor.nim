@@ -13,6 +13,8 @@ type
     lineStartStates: seq[uint8]   # 1 byte per line (tokenizer entry state)
     dirtyFromRow: int             # min row whose entry state may be stale
     spans: seq[Span]              # reused per-paint buffer
+    selAnchorRow, selAnchorCol: int
+    hasSel: bool
 
   Editor* = object
     e*: Element
@@ -87,6 +89,58 @@ proc followCursor(ed: ptr Editor) =
   elif ed.buf.cursorRow >= ed.buf.topLine + vr:
     ed.buf.topLine = ed.buf.cursorRow - vr + 1
   if ed.buf.topLine < 0: ed.buf.topLine = 0
+
+proc selOrdered(ed: ptr Editor): tuple[sr, sc, er, ec: int] =
+  ## Returns selection in document order (anchor and cursor swapped if needed).
+  let aR = ed.buf.selAnchorRow
+  let aC = ed.buf.selAnchorCol
+  let cR = ed.buf.cursorRow
+  let cC = ed.buf.cursorCol
+  if (aR < cR) or (aR == cR and aC <= cC):
+    (aR, aC, cR, cC)
+  else:
+    (cR, cC, aR, aC)
+
+proc selCopyText(ed: ptr Editor): string =
+  if not ed.buf.hasSel: return ""
+  let (sR, sC, eR, eC) = selOrdered(ed)
+  if sR == eR:
+    let line = ed.buf.lines[sR]
+    let lo = max(0, min(sC, line.len))
+    let hi = max(lo, min(eC, line.len))
+    return line.substr(lo, hi - 1)
+  var parts: seq[string] = @[]
+  let first = ed.buf.lines[sR]
+  parts.add(first.substr(min(sC, first.len)))
+  for r in (sR + 1) ..< eR:
+    parts.add(ed.buf.lines[r])
+  let last = ed.buf.lines[eR]
+  parts.add(last.substr(0, min(eC, last.len) - 1))
+  parts.join("\n")
+
+proc deleteSelection(ed: ptr Editor) =
+  if not ed.buf.hasSel: return
+  let (sR, sC, eR, eC) = selOrdered(ed)
+  let firstLine = ed.buf.lines[sR]
+  let lastLine = ed.buf.lines[eR]
+  let head = if sC <= 0: "" else: firstLine.substr(0, sC - 1)
+  let tail = if eC >= lastLine.len: "" else: lastLine.substr(eC)
+  ed.buf.lines[sR] = head & tail
+  for _ in (sR + 1) .. eR:
+    ed.buf.lines.delete(sR + 1)
+  ed.buf.cursorRow = sR
+  ed.buf.cursorCol = sC
+  ed.buf.hasSel = false
+  ed.buf.dirty = true
+  invalidateFrom(ed, sR)
+
+proc selAll(ed: ptr Editor) =
+  if ed.buf.lines.len == 0: return
+  ed.buf.selAnchorRow = 0
+  ed.buf.selAnchorCol = 0
+  ed.buf.cursorRow = ed.buf.lines.len - 1
+  ed.buf.cursorCol = ed.buf.lines[ed.buf.cursorRow].len
+  ed.buf.hasSel = true
 
 proc saveAtomic(path, content: string): bool =
   try:
@@ -377,6 +431,9 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
     if gutterW > 0:
       paintGutter(ed, painter, by, gW, gH, vr, gutterW)
     let contentLeft = bx + gutterW
+    var selSR, selSC, selER, selEC: int
+    if ed.buf.hasSel:
+      (selSR, selSC, selER, selEC) = selOrdered(ed)
     for i in 0 ..< vr:
       let rowIdx = ed.buf.topLine + i
       if rowIdx >= ed.buf.lines.len: break
@@ -384,6 +441,19 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
       let rowRect = Rectangle(l: contentLeft, r: ed.e.bounds.r,
                               t: y, b: y + gH)
       let line = ed.buf.lines[rowIdx]
+      # selection band — drawn under the tokens so the text remains readable.
+      if ed.buf.hasSel and rowIdx >= selSR and rowIdx <= selER:
+        let lo =
+          if rowIdx == selSR: selSC else: 0
+        let hi =
+          if rowIdx == selER: selEC
+          elif rowIdx < selER: line.len + 1   # +1 = cosmetic trailing cell so multi-line selections show the newline
+          else: 0
+        let x0 = contentLeft + cint(lo) * gW
+        let x1 = contentLeft + cint(hi) * gW
+        if x1 > x0:
+          drawBlock(painter, Rectangle(l: x0, r: x1, t: y, b: y + gH),
+                    ui.theme.selected)
       if line.len > 0:
         let entry =
           if rowIdx < ed.buf.lineStartStates.len: ed.buf.lineStartStates[rowIdx]
@@ -437,6 +507,30 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
       ed.buf.cursorCol = col
       clampCursor(ed)
       followCursor(ed)
+      ed.buf.selAnchorRow = ed.buf.cursorRow
+      ed.buf.selAnchorCol = ed.buf.cursorCol
+      ed.buf.hasSel = false
+      elementRepaint(element, nil)
+    return 1
+
+  elif message == msgMouseDrag:
+    let (gW, gH) = glyphDims()
+    let w = element.window
+    if w != nil:
+      let lx = w.cursorX - ed.e.bounds.l
+      let ly = w.cursorY - ed.e.bounds.t
+      let gutterW = gutterWidth(ed)
+      let contentLx = lx - gutterW
+      let row = ed.buf.topLine + int(ly div max(1, gH))
+      let col = int(max(0, contentLx) div max(1, gW))
+      ed.buf.cursorRow = row
+      ed.buf.cursorCol = col
+      clampCursor(ed)
+      followCursor(ed)
+      ed.buf.hasSel = (ed.buf.cursorRow != ed.buf.selAnchorRow or
+                      ed.buf.cursorCol != ed.buf.selAnchorCol)
+      if ed.buf.hasSel:
+        clipboardSetPrimary(selCopyText(ed))
       elementRepaint(element, nil)
     return 1
 
@@ -458,8 +552,38 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
     let shift = (w != nil and w.shift)
     clampCursor(ed)
 
+    let preRow = ed.buf.cursorRow
+    let preCol = ed.buf.cursorCol
+
+    template motionStart() =
+      if shift:
+        if not ed.buf.hasSel:
+          ed.buf.selAnchorRow = preRow
+          ed.buf.selAnchorCol = preCol
+          ed.buf.hasSel = true
+      else:
+        ed.buf.hasSel = false
+
+    template motionEnd() =
+      if ed.buf.hasSel and
+         ed.buf.selAnchorRow == ed.buf.cursorRow and
+         ed.buf.selAnchorCol == ed.buf.cursorCol:
+        ed.buf.hasSel = false
+      if ed.buf.hasSel:
+        clipboardSetPrimary(selCopyText(ed))
+
+    template editStart() =
+      if ed.buf.hasSel: deleteSelection(ed)
+
     if alt and shift:
-      # Shift+Alt motion family — word/page/buffer.
+      # Shift+Alt motion family — word/page/buffer. Shift here doubles for
+      # both the Alt-modifier signal AND selection-extend (consistent with
+      # plain Shift+arrow elsewhere).
+      let oldHas = ed.buf.hasSel
+      if not oldHas:
+        ed.buf.selAnchorRow = preRow
+        ed.buf.selAnchorCol = preCol
+        ed.buf.hasSel = true
       if code == int(KEYCODE_LETTER('L')) or code == int(KEYCODE_RIGHT):
         wordForward(ed)
       elif code == int(KEYCODE_LETTER('H')) or code == int(KEYCODE_LEFT):
@@ -473,9 +597,12 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
       elif code == int(KEYCODE_LETTER('E')) or code == int(KEYCODE_END):
         bufferEnd(ed)
       else:
+        # Not a motion — restore the pre-call selection state and bubble.
+        ed.buf.hasSel = oldHas
         return 0    # bubble — leaves Shift+Alt+T / Shift+Alt+P shortcuts alone
       clampCursor(ed)
       followCursor(ed)
+      motionEnd()
       elementRepaint(element, nil)
       return 1
 
@@ -489,11 +616,13 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
       let isDown = code == int(KEYCODE_LETTER('J'))
       let isUp   = code == int(KEYCODE_LETTER('K'))
       if isDown or isUp:
+        motionStart()
         let n = max(1, config.cursorJumpLines)
         if isDown: ed.buf.cursorRow += n
         else:      ed.buf.cursorRow -= n
         clampCursor(ed)
         followCursor(ed)
+        motionEnd()
         elementRepaint(element, nil)
         return 1
       # Other Alt+... bubble up for pane navigation / window shortcuts.
@@ -507,58 +636,70 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
 
     if ctrl:
       if code == int(KEYCODE_LETTER('F')):
-        ed.buf.cursorCol += 1
+        motionStart(); ed.buf.cursorCol += 1
       elif code == int(KEYCODE_LETTER('B')):
-        ed.buf.cursorCol -= 1
+        motionStart(); ed.buf.cursorCol -= 1
       elif code == int(KEYCODE_LETTER('N')):
-        ed.buf.cursorRow += 1
+        motionStart(); ed.buf.cursorRow += 1
       elif code == int(KEYCODE_LETTER('P')):
-        ed.buf.cursorRow -= 1
+        motionStart(); ed.buf.cursorRow -= 1
       elif code == int(KEYCODE_LETTER('A')):
-        ed.buf.cursorCol = 0
+        if shift:
+          selAll(ed)
+        else:
+          motionStart(); ed.buf.cursorCol = 0
       elif code == int(KEYCODE_LETTER('E')):
-        ed.buf.cursorCol = ed.buf.lines[ed.buf.cursorRow].len
+        motionStart(); ed.buf.cursorCol = ed.buf.lines[ed.buf.cursorRow].len
       elif code == int(KEYCODE_LETTER('K')):
-        killToEnd(ed)
+        editStart(); killToEnd(ed)
       elif code == int(KEYCODE_LETTER('S')):
         saveCurrent(ed)
       elif code == int(KEYCODE_LETTER('C')):
-        discard            # stub copy — no editor selection yet
+        if ed.buf.hasSel: clipboardSetBoth(selCopyText(ed))
       elif code == int(KEYCODE_LETTER('V')):
+        editStart()
         let txt = clipboardGet()
         if txt.len > 0:
-          # Strip trailing newline so single-line clipboard contents don't
-          # split unexpectedly; insert any embedded \n as real newlines.
           let parts = txt.splitLines()
           for i, line in parts:
             if i > 0: insertNewline(ed)
             if line.len > 0: insertText(ed, line)
       else:
         return 0
+      # K/S/C/V are not motions — skip the motionEnd finalize. selAll
+      # already set hasSel; motionEnd just publishes to PRIMARY.
+      if not (code == int(KEYCODE_LETTER('K')) or
+              code == int(KEYCODE_LETTER('S')) or
+              code == int(KEYCODE_LETTER('C')) or
+              code == int(KEYCODE_LETTER('V'))):
+        motionEnd()
       clampCursor(ed)
       followCursor(ed)
       elementRepaint(element, nil)
       return 1
 
     if code == int(KEYCODE_LEFT):
-      ed.buf.cursorCol -= 1
+      motionStart(); ed.buf.cursorCol -= 1; motionEnd()
     elif code == int(KEYCODE_RIGHT):
-      ed.buf.cursorCol += 1
+      motionStart(); ed.buf.cursorCol += 1; motionEnd()
     elif code == int(KEYCODE_UP):
-      ed.buf.cursorRow -= 1
+      motionStart(); ed.buf.cursorRow -= 1; motionEnd()
     elif code == int(KEYCODE_DOWN):
-      ed.buf.cursorRow += 1
+      motionStart(); ed.buf.cursorRow += 1; motionEnd()
     elif code == int(KEYCODE_HOME):
-      ed.buf.cursorCol = 0
+      motionStart(); ed.buf.cursorCol = 0; motionEnd()
     elif code == int(KEYCODE_END):
-      ed.buf.cursorCol = ed.buf.lines[ed.buf.cursorRow].len
+      motionStart(); ed.buf.cursorCol = ed.buf.lines[ed.buf.cursorRow].len
+      motionEnd()
     elif code == int(KEYCODE_ENTER):
-      insertNewline(ed)
+      editStart(); insertNewline(ed)
     elif code == int(KEYCODE_BACKSPACE):
-      backspace(ed)
+      if ed.buf.hasSel: deleteSelection(ed)
+      else: backspace(ed)
     elif code == int(KEYCODE_TAB):
-      insertText(ed, config.indentString())
+      editStart(); insertText(ed, config.indentString())
     elif k.textBytes > 0:
+      editStart()
       var s = newString(int(k.textBytes))
       copyMem(addr s[0], k.text, int(k.textBytes))
       insertText(ed, s)
