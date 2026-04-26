@@ -101,6 +101,7 @@ jobs:
           fi
           gh release create "${{ inputs.version }}" \
               "${PROJECT_NAME}-linux.zip" \
+              --repo "${{ github.repository }}" \
               --title "${{ inputs.version }}" \
               --notes "${{ inputs.notes }}" \
               $PRERELEASE_FLAG
