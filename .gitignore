@@ -1,8 +1,4 @@
 vendor/
 nimcache/
 build/
-prawk
-prawk-dev
-prawk-rel
 *.o
-ROADMAP.md

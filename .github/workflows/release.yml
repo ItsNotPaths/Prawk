@@ -7,7 +7,7 @@ on:
         required: true
         type: string
       notes:
-        description: 'Release notes'
+        description: 'Release notes / body'
         required: false
         type: string
         default: ''
@@ -23,8 +23,6 @@ env:
 jobs:
   build-linux:
     runs-on: ubuntu-latest
-    # TODO: if you need an older glibc floor, switch to a container like:
-    #   container: ubuntu:20.04
     steps:
       - uses: actions/checkout@v4
 
@@ -32,7 +30,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: vendor
-          key: vendor-linux-${{ hashFiles('download-deps.sh') }}
+          key: vendor-linux-${{ hashFiles('download-deps.sh', 'patches/libtmt-prawk.patch') }}
 
       - name: Download deps
         run: |
@@ -69,43 +67,17 @@ jobs:
         run: |
           mkdir -p dist
           cp "$PROJECT_NAME" dist/
-          [ -f README.md ] && cp README.md dist/ || true
-          [ -f LICENSE ] && cp LICENSE dist/ || true
+          [ -f README.md ]    && cp README.md    dist/ || true
+          [ -f gpl-3.0.txt ]  && cp gpl-3.0.txt  dist/ || true
+          [ -d themes ]       && cp -R themes    dist/ || true
 
       - uses: actions/upload-artifact@v4
         with:
           name: linux-zip
           path: dist
 
-  build-windows:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Cache vendor/
-        uses: actions/cache@v4
-        with:
-          path: vendor
-          key: vendor-windows-${{ hashFiles('download-deps.sh') }}
-
-      - name: Download deps
-        run: |
-          chmod +x ./download-deps.sh
-          ./download-deps.sh
-
-      - name: Stub (Windows support lands in Pass 4)
-        run: |
-          echo "Windows build lands in Pass 4 (ConPTY). Emitting placeholder dist/."
-          mkdir -p dist
-          echo "Windows build not yet available for this tag." > dist/README.md
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-zip
-          path: dist
-
   release:
-    needs: [build-linux, build-windows]
+    needs: [build-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -115,15 +87,9 @@ jobs:
           name: linux-zip
           path: linux-zip
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: windows-zip
-          path: windows-zip
-
       - name: Package
         run: |
           (cd linux-zip && zip -r "../${PROJECT_NAME}-linux.zip" .)
-          (cd windows-zip && zip -r "../${PROJECT_NAME}-windows.zip" .)
 
       - name: Create release
         env:
@@ -135,7 +101,6 @@ jobs:
           fi
           gh release create "${{ inputs.version }}" \
               "${PROJECT_NAME}-linux.zip" \
-              "${PROJECT_NAME}-windows.zip" \
               --title "${{ inputs.version }}" \
               --notes "${{ inputs.notes }}" \
               $PRERELEASE_FLAG

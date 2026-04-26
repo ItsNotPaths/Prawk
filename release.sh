@@ -12,7 +12,7 @@ usage: $(basename "$0") [--local] [--public --version vX.Y.Z [--notes "text"]]
   --local               build locally into <project>-release/ next to the project
   --public              trigger release.yml workflow via gh CLI
   --version <tag>       required when --public is used
-  --notes <text>        optional release notes
+  --notes <text>        optional release notes / body
 EOF
 }
 
@@ -65,8 +65,8 @@ if [ $DO_LOCAL -eq 1 ]; then
       nim c --opt:size -d:release -d:strip -d:lto \
             --out:"$BIN" src/prawk.nim )
 
-    [ -f "$PROJECT_DIR/README.md" ] && cp -f "$PROJECT_DIR/README.md" "$RELEASE_DIR/" || true
-    [ -f "$PROJECT_DIR/LICENSE" ]   && cp -f "$PROJECT_DIR/LICENSE"   "$RELEASE_DIR/" || true
+    [ -f "$PROJECT_DIR/README.md" ]    && cp -f "$PROJECT_DIR/README.md"    "$RELEASE_DIR/" || true
+    [ -f "$PROJECT_DIR/gpl-3.0.txt" ]  && cp -f "$PROJECT_DIR/gpl-3.0.txt"  "$RELEASE_DIR/" || true
     if [ -d "$PROJECT_DIR/themes" ]; then
         rm -rf "$RELEASE_DIR/themes"
         cp -R "$PROJECT_DIR/themes" "$RELEASE_DIR/themes"
