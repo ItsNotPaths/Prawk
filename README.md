@@ -7,6 +7,8 @@ stripped binary, single file. Runtime deps: `libX11`, `libfreetype.so.6`, `git`,
 
 ![alt text](https://files.paths.place/prawk-ss-1.png)
 ![alt text](https://files.paths.place/prawk-ss-2.png)
+![alt text](https://files.paths.place/prawk-ss-3.png)
+
 
 ## Run
 
