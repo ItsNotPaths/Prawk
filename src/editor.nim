@@ -2,6 +2,15 @@ import std/[os, strutils]
 import luigi, config, font, highlight, clipboard
 
 type
+  EditKind = enum
+    ekNone, ekInsert, ekBackspace, ekOther
+
+  Snapshot = object
+    lines: seq[string]
+    cursorRow, cursorCol: int
+    selAnchorRow, selAnchorCol: int
+    hasSel: bool
+
   EditorBuf* = object
     lines: seq[string]
     cursorRow, cursorCol: int
@@ -20,6 +29,10 @@ type
     panStartX, panStartY: cint
     panStartTopLine, panStartTopCol: int
     wrap: bool
+    undoStack: seq[Snapshot]
+    redoStack: seq[Snapshot]
+    lastEditKind: EditKind
+    lastEditRow, lastEditCol: int   # cursor position after the last edit
 
   Editor* = object
     e*: Element
@@ -195,6 +208,9 @@ proc loadIntoBuf(b: var EditorBuf, path: string) =
   b.syntax = highlight.syntaxForPath(path)
   b.lineStartStates.setLen(0)
   b.dirtyFromRow = 0
+  b.undoStack.setLen(0)
+  b.redoStack.setLen(0)
+  b.lastEditKind = ekNone
   if fileExists(path):
     try:
       let content = readFile(path)
@@ -301,6 +317,70 @@ proc markDirty(ed: ptr Editor) =
   ed.buf.dirty = true
   if not was and editorTabsRepaintCb != nil:
     editorTabsRepaintCb()
+
+const undoCap = 500
+
+proc takeSnapshot(b: EditorBuf): Snapshot =
+  Snapshot(lines: b.lines, cursorRow: b.cursorRow, cursorCol: b.cursorCol,
+           selAnchorRow: b.selAnchorRow, selAnchorCol: b.selAnchorCol,
+           hasSel: b.hasSel)
+
+proc applySnapshot(b: var EditorBuf, s: Snapshot) =
+  b.lines = s.lines
+  b.cursorRow = s.cursorRow
+  b.cursorCol = s.cursorCol
+  b.selAnchorRow = s.selAnchorRow
+  b.selAnchorCol = s.selAnchorCol
+  b.hasSel = s.hasSel
+  b.dirtyFromRow = 0   # rehighlight from top after a structural change
+  b.lineStartStates.setLen(0)
+
+proc pushUndo(ed: ptr Editor, kind: EditKind) =
+  ## Snapshot before mutating. Coalesces consecutive same-kind edits at the
+  ## position the previous edit ended on, so a typing run becomes one undo
+  ## step rather than one per keystroke.
+  let coalesce = kind != ekOther and
+                 kind == ed.buf.lastEditKind and
+                 ed.buf.cursorRow == ed.buf.lastEditRow and
+                 ed.buf.cursorCol == ed.buf.lastEditCol
+  if not coalesce:
+    if ed.buf.undoStack.len >= undoCap:
+      ed.buf.undoStack.delete(0)
+    ed.buf.undoStack.add(takeSnapshot(ed.buf))
+  ed.buf.redoStack.setLen(0)
+  ed.buf.lastEditKind = kind
+
+proc noteEditEnd(ed: ptr Editor) =
+  ## Call after each edit so coalescing can compare the next edit's starting
+  ## cursor against where the previous edit left off.
+  ed.buf.lastEditRow = ed.buf.cursorRow
+  ed.buf.lastEditCol = ed.buf.cursorCol
+
+proc editorUndo*(ed: ptr Editor) =
+  if ed == nil or ed.buf.undoStack.len == 0: return
+  ed.buf.redoStack.add(takeSnapshot(ed.buf))
+  let s = ed.buf.undoStack.pop()
+  applySnapshot(ed.buf, s)
+  ed.buf.lastEditKind = ekNone
+  markDirty(ed)
+  clampCursor(ed)
+  followCursor(ed)
+  elementRepaint(addr ed.e, nil)
+
+proc editorRedo*(ed: ptr Editor) =
+  if ed == nil or ed.buf.redoStack.len == 0: return
+  ed.buf.undoStack.add(takeSnapshot(ed.buf))
+  let s = ed.buf.redoStack.pop()
+  applySnapshot(ed.buf, s)
+  ed.buf.lastEditKind = ekNone
+  markDirty(ed)
+  clampCursor(ed)
+  followCursor(ed)
+  elementRepaint(addr ed.e, nil)
+
+proc editorCopySelection*(ed: ptr Editor) =
+  if ed == nil or not ed.buf.hasSel: return
+  clipboardSetBoth(selCopyText(ed))
 
 proc insertText(ed: ptr Editor, s: string) =
   if s.len == 0: return
@@ -434,6 +514,21 @@ proc saveCurrent*(ed: ptr Editor) =
     let was = ed.buf.dirty
     ed.buf.dirty = false
     if was and editorTabsRepaintCb != nil: editorTabsRepaintCb()
+
+proc editorPasteAtCursor*(ed: ptr Editor) =
+  if ed == nil: return
+  let txt = clipboardGet()
+  if txt.len == 0: return
+  pushUndo(ed, ekOther)
+  if ed.buf.hasSel: deleteSelection(ed)
+  let parts = txt.splitLines()
+  for i, line in parts:
+    if i > 0: insertNewline(ed)
+    if line.len > 0: insertText(ed, line)
+  noteEditEnd(ed)
+  clampCursor(ed)
+  followCursor(ed)
+  elementRepaint(addr ed.e, nil)
 
 proc activeMode*(ed: ptr Editor): CursorMode =
   if ed == nil or ed.tabs.len == 0: cmInsert
@@ -901,16 +996,26 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
       elif code == int(KEYCODE_LETTER('C')):
         if ed.buf.hasSel: clipboardSetBoth(selCopyText(ed))
       elif code == int(KEYCODE_LETTER('V')):
-        editStart()
         let txt = clipboardGet()
         if txt.len > 0:
+          pushUndo(ed, ekOther)
+          editStart()
           let parts = txt.splitLines()
           for i, line in parts:
             if i > 0: insertNewline(ed)
             if line.len > 0: insertText(ed, line)
+          noteEditEnd(ed)
       elif code == int(KEYCODE_LETTER('D')):
         # killToEnd moved off Ctrl+K so K could mirror Up.
+        pushUndo(ed, ekOther)
         editStart(); killToEnd(ed)
+        noteEditEnd(ed)
+      elif code == int(KEYCODE_LETTER('Z')):
+        if shift: editorRedo(ed) else: editorUndo(ed)
+        return 1
+      elif code == int(KEYCODE_LETTER('Y')):
+        editorRedo(ed)
+        return 1
       else:
         return 0
       clampCursor(ed)
@@ -932,17 +1037,27 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
       motionStart(); ed.buf.cursorCol = ed.buf.lines[ed.buf.cursorRow].len
       motionEnd()
     elif code == int(KEYCODE_ENTER):
+      pushUndo(ed, ekOther)
       editStart(); insertNewline(ed)
+      noteEditEnd(ed)
     elif code == int(KEYCODE_BACKSPACE):
-      if ed.buf.hasSel: deleteSelection(ed)
-      else: backspace(ed)
+      if ed.buf.hasSel:
+        pushUndo(ed, ekOther); deleteSelection(ed)
+      else:
+        pushUndo(ed, ekBackspace); backspace(ed)
+      noteEditEnd(ed)
     elif code == int(KEYCODE_TAB):
+      pushUndo(ed, ekOther)
       editStart(); insertText(ed, config.indentString())
+      noteEditEnd(ed)
     elif k.textBytes > 0:
+      let kind = if ed.buf.hasSel: ekOther else: ekInsert
+      pushUndo(ed, kind)
       editStart()
       var s = newString(int(k.textBytes))
       copyMem(addr s[0], k.text, int(k.textBytes))
       insertText(ed, s)
+      noteEditEnd(ed)
     else:
       return 0
 

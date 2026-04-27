@@ -2,3 +2,4 @@ vendor/
 nimcache/
 build/
 *.o
+move.sh

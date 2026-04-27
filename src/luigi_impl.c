@@ -5,6 +5,30 @@ UIWindow **prawk_ui_windows(void)     { return &ui.windows; }
 UITheme   *prawk_ui_theme(void)       { return &ui.theme; }
 UIFont   **prawk_ui_active_font(void) { return &ui.activeFont; }
 
+/* Toggle _NET_WM_STATE_FULLSCREEN on the given window via an EWMH ClientMessage
+ * to the root. luigi has no fullscreen API of its own; this is the standard
+ * X11 dance and works on any compliant window manager. */
+void prawk_window_toggle_fullscreen(UIWindow *window)
+{
+    if (!window) return;
+    Display *dpy = ui.display;
+    Atom wmState = XInternAtom(dpy, "_NET_WM_STATE", 0);
+    Atom fs = XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", 0);
+    XEvent ev = {0};
+    ev.xclient.type = ClientMessage;
+    ev.xclient.window = window->window;
+    ev.xclient.message_type = wmState;
+    ev.xclient.format = 32;
+    ev.xclient.data.l[0] = 2;       /* _NET_WM_STATE_TOGGLE */
+    ev.xclient.data.l[1] = (long)fs;
+    ev.xclient.data.l[2] = 0;
+    ev.xclient.data.l[3] = 1;       /* source: normal application */
+    ev.xclient.data.l[4] = 0;
+    XSendEvent(dpy, DefaultRootWindow(dpy), False,
+               SubstructureNotifyMask | SubstructureRedirectMask, &ev);
+    XFlush(dpy);
+}
+
 /* Draws an arbitrary Unicode codepoint via FreeType, no caching. luigi's
  * built-in UIDrawGlyph caps at 0..127 (luigi.h:1288). Slower than the cached
  * path, but only invoked for non-ASCII cells in the terminal renderer. */

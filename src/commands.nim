@@ -44,6 +44,32 @@ proc cmdEditorSave(args: seq[string]) =
   if editor.theEditor != nil:
     saveCurrent(editor.theEditor)
 
+proc cmdEditorCopy(args: seq[string]) =
+  if editor.theEditor != nil:
+    editorCopySelection(editor.theEditor)
+
+proc cmdEditorPaste(args: seq[string]) =
+  if editor.theEditor != nil:
+    editorPasteAtCursor(editor.theEditor)
+
+proc cmdEditorUndo(args: seq[string]) =
+  if editor.theEditor != nil:
+    editorUndo(editor.theEditor)
+
+proc cmdEditorRedo(args: seq[string]) =
+  if editor.theEditor != nil:
+    editorRedo(editor.theEditor)
+
+proc cmdWindowFullscreen(args: seq[string]) =
+  ## Toggle _NET_WM_STATE_FULLSCREEN on the first non-menu window. luigi
+  ## doesn't expose its own fullscreen API; this routes through X11 directly.
+  var w = cast[ptr Window](ui.windows)
+  while w != nil:
+    if (w.e.flags and WINDOW_MENU) == 0:
+      windowToggleFullscreen(w)
+      return
+    w = w.next
+
 proc cmdQuit(args: seq[string]) =
   quit(0)
 
@@ -180,6 +206,11 @@ proc registerBuiltins*() =
   registerCommand("editor.save", cmdEditorSave)
   registerCommand("editor.open", cmdEditorOpen)
   registerCommand("editor.open.force", cmdEditorOpenForce)
+  registerCommand("editor.copy", cmdEditorCopy)
+  registerCommand("editor.paste", cmdEditorPaste)
+  registerCommand("editor.undo", cmdEditorUndo)
+  registerCommand("editor.redo", cmdEditorRedo)
+  registerCommand("window.fullscreen", cmdWindowFullscreen)
   registerCommand("quit", cmdQuit)
   registerCommand("term.new", cmdTermNew)
   registerCommand("term.kill", cmdTermKill)

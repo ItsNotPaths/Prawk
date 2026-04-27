@@ -123,8 +123,7 @@ proc rebuildFileOptions(mb: ptr Menubar) =
 
 proc rebuildViewOptions(mb: ptr Menubar) =
   mb.items[2].options = @[
-    mkOption("Toggle Sidebar"),
-    mkOption("Toggle Fullscreen"),
+    mkOption("Toggle Fullscreen", "window.fullscreen"),
     mkOption("--- Themes ---"),
   ]
   for n in theme.themeNames():
@@ -489,10 +488,10 @@ proc menubarCreate*(parent: ptr Element, flags: uint32 = 0): ptr Menubar =
   # (recents are dynamic) — only the label is set here.
   mb.items[0] = MenuItem(label: cstring"File")
   mb.items[1] = MenuItem(label: cstring"Edit", options: @[
-    mkOption("Copy"),
-    mkOption("Paste"),
-    mkOption("Undo"),
-    mkOption("Redo"),
+    mkOption("Copy",  "editor.copy"),
+    mkOption("Paste", "editor.paste"),
+    mkOption("Undo",  "editor.undo"),
+    mkOption("Redo",  "editor.redo"),
   ])
   # View options are built lazily by rebuildViewOptions on each spawn so the
   # active-theme marker stays accurate after :theme changes the selection.

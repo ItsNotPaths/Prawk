@@ -249,6 +249,11 @@ proc measureStringWidth*(s: cstring; bytes: int = -1): cint
 proc drawGlyphCp*(p: ptr Painter; x, y: cint; cp: cint; color: uint32)
                   {.cdecl, importc: "prawk_draw_glyph_cp".}
 
+# prawk: toggle _NET_WM_STATE_FULLSCREEN via X11 ClientMessage. luigi has no
+# fullscreen API.
+proc windowToggleFullscreen*(window: ptr Window)
+                  {.cdecl, importc: "prawk_window_toggle_fullscreen".}
+
 proc fontCreate*(cPath: cstring; size: uint32): ptr Font
                   {.cdecl, lH, importc: "UIFontCreate".}
 proc fontActivate*(font: ptr Font): ptr Font
