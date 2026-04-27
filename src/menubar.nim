@@ -23,6 +23,9 @@ type
     palAnchor: int     # selection anchor; meaningful when hasPalSel
     hasPalSel: bool
     menuOpen: bool
+    history: seq[string]
+    histIdx: int       # -1 = at live buffer; else index into history
+    histDraft: string  # buffer the user was typing before recalling history
 
 var theMenubar*: ptr Menubar
 
@@ -171,6 +174,31 @@ proc resetPalState(mb: ptr Menubar) =
   mb.palCursor = 0
   mb.palAnchor = 0
   mb.hasPalSel = false
+  mb.histIdx = -1
+  mb.histDraft = ""
+
+proc histRecall(mb: ptr Menubar, delta: int) =
+  ## delta = -1 walks back into history (Up), +1 walks forward toward live (Down).
+  if mb.history.len == 0: return
+  if mb.histIdx == -1 and delta < 0:
+    mb.histDraft = mb.palBuf
+  var idx = mb.histIdx
+  if idx == -1:
+    if delta < 0: idx = mb.history.len - 1
+    else: return
+  else:
+    idx += -delta  # delta=-1 (Up) → older = lower index
+    if idx < 0: idx = 0
+    elif idx >= mb.history.len:
+      mb.histIdx = -1
+      mb.palBuf = mb.histDraft
+      mb.palCursor = mb.palBuf.len
+      mb.hasPalSel = false
+      return
+  mb.histIdx = idx
+  mb.palBuf = mb.history[idx]
+  mb.palCursor = mb.palBuf.len
+  mb.hasPalSel = false
 
 proc palSelRange(mb: ptr Menubar): tuple[lo, hi: int] =
   let a = mb.palAnchor
@@ -250,6 +278,13 @@ proc paletteOpenCb*(cp: pointer) {.cdecl.} =
 
 proc executePalette(mb: ptr Menubar) =
   let line = mb.palBuf.strip()
+  if line.len > 0:
+    # De-dupe consecutive repeats so spamming Enter doesn't pad history.
+    if mb.history.len == 0 or mb.history[^1] != line:
+      mb.history.add(line)
+      const histMax = 200
+      if mb.history.len > histMax:
+        mb.history = mb.history[mb.history.len - histMax .. ^1]
   exitPalette(mb)
   if line.len > 0 and commands.clDispatchCb != nil:
     commands.clDispatchCb(line)
@@ -400,6 +435,14 @@ proc menubarMessage(element: ptr Element, message: Message, di: cint, dp: pointe
       motionStart()
       if mb.palCursor < mb.palBuf.len: inc mb.palCursor
       motionEnd()
+      elementRepaint(element, nil)
+      return 1
+    if code == int(KEYCODE_UP):
+      histRecall(mb, -1)
+      elementRepaint(element, nil)
+      return 1
+    if code == int(KEYCODE_DOWN):
+      histRecall(mb, +1)
       elementRepaint(element, nil)
       return 1
     if code == int(KEYCODE_HOME):

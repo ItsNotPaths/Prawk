@@ -359,15 +359,20 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
 
     # --- IDE / legacy copy-paste remap ----------------------------------
     if ctrl and code == int(KEYCODE_LETTER('C')):
+      # INTR byte; the slave's line discipline (ISIG) turns it into SIGINT
+      # delivered to the foreground process group, so TUIs running inside
+      # the shell (claude, vim) actually see the interrupt. Killing t.pid
+      # would only signal the shell, which usually swallows it.
+      let intr = "\x03"
       case config.terminalCopyPaste
       of tcpIde:
         if shift:
-          # Force SIGINT escape hatch even when a selection is held.
-          if t.pid > 0: discard kill(t.pid, SIGINT)
+          # Force-interrupt escape hatch even when a selection is held.
+          discard write(t.ptyFd, intr.cstring, 1)
         elif t.hasSel:
           clipboardSetBoth(selCopyText(t))
         else:
-          if t.pid > 0: discard kill(t.pid, SIGINT)
+          discard write(t.ptyFd, intr.cstring, 1)
         return 1
       of tcpLegacy:
         if shift:
@@ -399,7 +404,9 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
     elif code == int(KEYCODE_ENTER):     seqStr = "\r"
     elif code == int(KEYCODE_BACKSPACE): seqStr = "\x7f"
     elif code == int(KEYCODE_ESCAPE):    seqStr = "\x1b"
-    elif code == int(KEYCODE_TAB):       seqStr = "\t"
+    elif code == int(KEYCODE_TAB):
+      # Shift+Tab → CSI Z ("back tab"); TUIs (claude, vim, readline) key off this.
+      seqStr = if shift: "\x1b[Z" else: "\t"
     # Only an actual byte-producing keypress should clear the selection;
     # standalone modifier holds (Ctrl by itself, Shift by itself) must not,
     # otherwise Ctrl+C never sees the selection.
