@@ -1,7 +1,7 @@
 import std/[os, strutils]
 import posix
 import luigi
-import pty, project, font, config, clipboard
+import pty, project, font, config, clipboard, theme
 when defined(termDebug):
   import termdebug
   export termdebug.ParserState
@@ -66,20 +66,19 @@ proc tmtCallback(m: cint, vt: ptr TMT, a: pointer, p: pointer) {.cdecl.} =
 
 var allTerminals*: seq[ptr Terminal]
 
-const fgPalette: array[9, uint32] = [
-  0x32302f'u32, 0xea6962'u32, 0xa9b665'u32, 0xd8a657'u32,
-  0x9253be'u32, 0x7c6b9e'u32, 0x89b482'u32, 0xd4be98'u32,
-  0xd4be98'u32,
-]
-const bgPalette: array[9, uint32] = [
-  0x32302f'u32, 0xea6962'u32, 0xa9b665'u32, 0xd8a657'u32,
-  0x9253be'u32, 0x7c6b9e'u32, 0x89b482'u32, 0xd4be98'u32,
-  0x32302f'u32,
-]
-
 proc colorOf(c: TmtColor, fg: bool): uint32 =
-  let idx = if c < 1 or c >= 9: 8 else: int(c - 1)
-  if fg: fgPalette[idx] else: bgPalette[idx]
+  # libtmt encodes ANSI colors as 1..8 (BLACK..WHITE); 0 / out-of-range = DEFAULT.
+  let p = currentPalette
+  case int(c)
+  of 1: p.borderDark    # BLACK
+  of 2: p.urgent        # RED
+  of 3: p.codeType      # GREEN
+  of 4: p.codeString    # YELLOW
+  of 5: p.accent        # BLUE
+  of 6: p.codeKeyword   # MAGENTA
+  of 7: p.codeReturnType # CYAN
+  of 8: p.fg            # WHITE
+  else: (if fg: p.fg else: p.bg)
 
 proc selOrdered(t: ptr Terminal): tuple[sR, sC, eR, eC: int] =
   let aR = t.selAnchorR; let aC = t.selAnchorC
@@ -197,7 +196,7 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
           drawGlyphCp(painter, x, y, ch, fg)
     if element.window != nil and element.window.focused == element:
       let b = t.e.bounds
-      drawBorder(painter, b, 0x9253be'u32, Rectangle(l: 2, r: 2, t: 2, b: 2))
+      drawBorder(painter, b, currentPalette.accent, Rectangle(l: 2, r: 2, t: 2, b: 2))
     tmt_clean(t.vt)
     return 1
 
