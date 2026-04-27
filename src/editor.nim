@@ -255,17 +255,10 @@ proc editorOpenSynthetic*(ed: ptr Editor, synthPath, content: string) =
     b.syntax = highlight.syntaxByName("diff")
     b.lineStartStates.setLen(0)
     b.dirtyFromRow = 0
-  let scratchOnly = ed.tabs.len == 1 and ed.tabs[0].path.len == 0 and
-                    not ed.tabs[0].dirty and ed.tabs[0].lines.len == 1 and
-                    ed.tabs[0].lines[0].len == 0
-  if scratchOnly:
-    fillBuf(ed.tabs[0], synthPath, content)
-    ed.activeIdx = 0
-  else:
-    var nb: EditorBuf
-    fillBuf(nb, synthPath, content)
-    ed.tabs.add(nb)
-    ed.activeIdx = ed.tabs.len - 1
+  var nb: EditorBuf
+  fillBuf(nb, synthPath, content)
+  ed.tabs.add(nb)
+  ed.activeIdx = ed.tabs.len - 1
   elementRepaint(addr ed.e, nil)
 
 proc editorIsDirty*(): bool =
