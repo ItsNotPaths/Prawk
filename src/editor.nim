@@ -1,5 +1,5 @@
 import std/[os, strutils]
-import luigi, config, font, highlight, clipboard
+import luigi, config, font, highlight, clipboard, theme
 
 type
   EditKind = enum
@@ -829,7 +829,7 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
       paintGutter(ed, painter, by, gW, gH, gutterW, vrows)
     # focus border
     if element.window != nil and element.window.focused == element:
-      drawBorder(painter, ed.e.bounds, 0x9253be'u32,
+      drawBorder(painter, ed.e.bounds, currentPalette.accent,
                  Rectangle(l: 2, r: 2, t: 2, b: 2))
     return 1
 

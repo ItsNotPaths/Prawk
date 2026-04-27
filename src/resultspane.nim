@@ -1,4 +1,4 @@
-import luigi, font, commands
+import luigi, font, commands, theme
 
 type
   Provider* = object
@@ -128,7 +128,7 @@ proc paneMessage(element: ptr Element, message: Message, di: cint, dp: pointer):
       else:
         paintDefaultRow(p, idx, painter, rowRect, isSel)
     if element.window != nil and element.window.focused == element:
-      drawBorder(painter, element.bounds, 0x9253be'u32,
+      drawBorder(painter, element.bounds, currentPalette.accent,
                  Rectangle(l: 2, r: 2, t: 2, b: 2))
     return 1
 

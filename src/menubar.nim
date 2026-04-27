@@ -221,11 +221,14 @@ proc palInsert(mb: ptr Menubar, s: string) =
   mb.palCursor += s.len
 
 proc enterPalette*(mb: ptr Menubar) =
-  if mb.palette: return
+  let wasPalette = mb.palette
   discard menusClose()
   mb.palette = true
   resetPalState(mb)
-  if mb.e.window != nil:
+  # Only capture prevFocus on the first entry — re-pressing Alt+C while the
+  # palette is already "open but focus drifted" must not overwrite the
+  # original return target.
+  if mb.e.window != nil and not wasPalette:
     mb.prevFocus = mb.e.window.focused
   elementFocus(addr mb.e)
   elementRepaint(addr mb.e, nil)

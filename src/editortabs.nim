@@ -1,4 +1,4 @@
-import luigi, font, editor
+import luigi, font, editor, theme
 
 const
   tabPadX*: cint = 8
@@ -94,7 +94,7 @@ proc tabsMessage(element: ptr Element, message: Message, di: cint, dp: pointer):
     let painter = cast[ptr Painter](dp)
     paintStrip(t, painter)
     if element.window != nil and element.window.focused == element:
-      drawBorder(painter, t.e.bounds, 0x9253be'u32,
+      drawBorder(painter, t.e.bounds, currentPalette.accent,
                  Rectangle(l: 2, r: 2, t: 2, b: 2))
     return 1
 

@@ -36,6 +36,8 @@ proc tmt_cursor(vt: ptr TMT): ptr TmtPoint {.importc, header: "tmt.h".}
 proc tmt_clean(vt: ptr TMT) {.importc, header: "tmt.h".}
 
 type
+  ScrollLine = seq[TmtChar]
+
   Terminal* = object
     e*: Element
     name*: string
@@ -50,8 +52,14 @@ type
     selEndR, selEndC: int
     hasSel: bool
     cursorVisible*: bool
+    history: seq[ScrollLine]
+    scrollOffset: int  # 0 = live; N = N lines scrolled back into history
     when defined(termDebug):
       dbgParser*: ParserState
+
+const
+  scrollbackMax = 2000
+  scrollbackOver = 256  # trim only when this many over the cap, amortizing the slice
 
 # tmt_msg_t enum values, mirrored from tmt.h.
 const
@@ -79,6 +87,57 @@ proc colorOf(c: TmtColor, fg: bool): uint32 =
   of 7: p.codeReturnType # CYAN
   of 8: p.fg            # WHITE
   else: (if fg: p.fg else: p.bg)
+
+proc captureScreen(t: ptr Terminal): seq[ScrollLine] =
+  if t.vt == nil: return
+  let scr = tmt_screen(t.vt)
+  let nrow = int(scr.nline)
+  let ncol = int(scr.ncol)
+  result = newSeq[ScrollLine](nrow)
+  for r in 0 ..< nrow:
+    let line = scr.lines[r]
+    var row = newSeq[TmtChar](ncol)
+    for c in 0 ..< ncol:
+      row[c] = line.chars[c]
+    result[r] = row
+
+proc rowsEqualChars(a: ScrollLine, b: ptr TmtLine, ncol: int): bool =
+  if a.len != ncol: return false
+  for c in 0 ..< ncol:
+    if a[c].c != b.chars[c].c: return false
+  true
+
+proc detectScroll(t: ptr Terminal, old: seq[ScrollLine]) =
+  ## Diff the pre-write grid against the post-write grid and push any rows
+  ## that scrolled off the top into history. libtmt has no scroll callback,
+  ## so we infer scroll-by-k by finding the smallest k where new[0..nrow-1-k]
+  ## equals old[k..nrow-1] row-by-row (chars only — attrs may shift).
+  if t.vt == nil or old.len == 0: return
+  let scr = tmt_screen(t.vt)
+  let nrow = int(scr.nline)
+  let ncol = int(scr.ncol)
+  if old.len != nrow: return
+  # No-op write: top row unchanged → no scroll.
+  if rowsEqualChars(old[0], scr.lines[0], ncol): return
+  var k = 0
+  for tryK in 1 ..< nrow:
+    var ok = true
+    for i in 0 ..< (nrow - tryK):
+      if not rowsEqualChars(old[i + tryK], scr.lines[i], ncol):
+        ok = false; break
+    if ok:
+      k = tryK; break
+  if k == 0: return
+  for i in 0 ..< k:
+    t.history.add(old[i])
+  if t.history.len > scrollbackMax + scrollbackOver:
+    let dropN = t.history.len - scrollbackMax
+    t.history = t.history[dropN .. ^1]
+  # Live writes always snap the viewport to the bottom; preserve the
+  # invariant that scrolled-back content stays visually anchored by
+  # increasing the offset by k (so the user keeps seeing what they scrolled to).
+  if t.scrollOffset > 0:
+    t.scrollOffset = min(t.history.len, t.scrollOffset + k)
 
 proc selOrdered(t: ptr Terminal): tuple[sR, sC, eR, eC: int] =
   let aR = t.selAnchorR; let aC = t.selAnchorC
@@ -169,18 +228,32 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
     let drawCursor = t.cursorVisible and
                      element.window != nil and
                      element.window.focused == element
-    for r in 0 ..< int(scr.nline):
-      let line = scr.lines[r]
-      for col in 0 ..< int(scr.ncol):
-        let cell = line.chars[col]
+    let nrow = int(scr.nline)
+    let ncol = int(scr.ncol)
+    let histLines = min(t.scrollOffset, t.history.len)
+    for r in 0 ..< nrow:
+      let isHist = r < histLines
+      let liveR = r - histLines
+      var hLine: ScrollLine
+      var line: ptr TmtLine = nil
+      if isHist:
+        hLine = t.history[t.history.len - histLines + r]
+      else:
+        line = scr.lines[liveR]
+      for col in 0 ..< ncol:
+        let cell =
+          if isHist:
+            (if col < hLine.len: hLine[col] else: TmtChar(c: cint(' ')))
+          else:
+            line.chars[col]
         let x = bx + cint(col) * gW
         let y = by + cint(r) * gH
         var fg = colorOf(cell.a.fg, true)
         var bg = colorOf(cell.a.bg, false)
         if cell.a.reverse: swap(fg, bg)
-        if drawCursor and int(cur.r) == r and int(cur.c) == col:
+        if not isHist and drawCursor and int(cur.r) == liveR and int(cur.c) == col:
           swap(fg, bg)
-        if inSel(t, r, col):
+        if not isHist and inSel(t, liveR, col):
           bg = ui.theme.selected
         drawBlock(painter, Rectangle(l: x, r: x + gW, t: y, b: y + gH), bg)
         let ch = cell.c
@@ -199,6 +272,18 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
       drawBorder(painter, b, currentPalette.accent, Rectangle(l: 2, r: 2, t: 2, b: 2))
     tmt_clean(t.vt)
     return 1
+
+  elif message == msgMouseWheel:
+    # di > 0 = wheel down (toward live); di < 0 = wheel up (back in history).
+    # Step is roughly one line per notch on a typical mouse.
+    let step = -(int(di) div 40)
+    let newOff = clamp(t.scrollOffset + step, 0, t.history.len)
+    if newOff != t.scrollOffset:
+      t.scrollOffset = newOff
+      elementRepaint(element, nil)
+      return 1
+    # At the limit — let the parent stack scroll between terminals.
+    return 0
 
   elif message == msgLayout:
     let w = t.e.bounds.r - t.e.bounds.l
@@ -223,6 +308,16 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
     let ctrl  = (w != nil and w.ctrl)
     let shift = (w != nil and w.shift)
     let code = k.code
+
+    # --- Ctrl+Shift+Up/Down scroll the scrollback buffer -----------------
+    if ctrl and shift and (code == int(KEYCODE_UP) or code == int(KEYCODE_DOWN)):
+      let pageStep = max(1, t.rows div 2)
+      let delta = if code == int(KEYCODE_UP): pageStep else: -pageStep
+      let newOff = clamp(t.scrollOffset + delta, 0, t.history.len)
+      if newOff != t.scrollOffset:
+        t.scrollOffset = newOff
+        elementRepaint(element, nil)
+      return 1
 
     # --- Shift+arrow extends selection over the visible grid -------------
     # Done before PTY pass-through so vim/tmux inside the terminal don't see
@@ -311,6 +406,8 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
     let producesBytes = seqStr.len > 0 or k.textBytes > 0
     if producesBytes and t.hasSel:
       t.hasSel = false
+    if producesBytes and t.scrollOffset > 0:
+      t.scrollOffset = 0
     if seqStr.len > 0:
       discard write(t.ptyFd, seqStr.cstring, seqStr.len)
     elif k.textBytes > 0:
@@ -352,7 +449,9 @@ proc terminalCreate*(parent: ptr Element, flags: uint32 = 0): ptr Terminal =
 
 proc termWrite*(t: ptr Terminal, s: string) =
   if t == nil or t.vt == nil or s.len == 0: return
+  let snap = captureScreen(t)
   tmt_write(t.vt, s.cstring, csize_t(s.len))
+  detectScroll(t, snap)
   elementRepaint(addr t.e, nil)
 
 proc termRunCmd*(t: ptr Terminal, line: string) =
@@ -386,7 +485,9 @@ proc drainAll*() =
       when defined(termDebug):
         dbgRecordRead(terminalIndex(t), t.dbgParser,
                       addr t.readBuf[0], n.int)
+      let snap = captureScreen(t)
       tmt_write(t.vt, cast[cstring](addr t.readBuf[0]), csize_t(n))
+      detectScroll(t, snap)
       elementRepaint(addr t.e, nil)
       if n < t.readBuf.len: break
 

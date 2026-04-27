@@ -6,7 +6,7 @@
 ## not via tab click). Read-only-ish — visualize, don't actuate.
 
 import std/[os, osproc, strutils, streams, times]
-import luigi, font, project, editor, commands
+import luigi, font, project, editor, commands, theme
 
 # editortabs.tabsHeight gives us a matching strip height; importing the
 # module is cheap and keeps the look consistent.
@@ -535,7 +535,7 @@ proc gitPaneMessage(element: ptr Element, message: Message,
     drawBlock(painter, zones.dividerR, ui.theme.border)
     paintLog(g, painter, zones.logR)
     if element.window != nil and element.window.focused == element:
-      drawBorder(painter, element.bounds, 0x9253be'u32,
+      drawBorder(painter, element.bounds, currentPalette.accent,
                  Rectangle(l: 2, r: 2, t: 2, b: 2))
     return 1
 
