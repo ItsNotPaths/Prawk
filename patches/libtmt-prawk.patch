@@ -1,5 +1,5 @@
 diff --git a/tmt.c b/tmt.c
-index 7ace141..a0d003b 100644
+index 7ace141..4ac43db 100644
 --- a/tmt.c
 +++ b/tmt.c
 @@ -67,10 +67,21 @@ struct TMT{
@@ -118,7 +118,24 @@ index 7ace141..a0d003b 100644
  }
  
  HANDLER(ed)
-@@ -251,6 +283,9 @@ HANDLER(consumearg)
+@@ -221,6 +253,16 @@ HANDLER(sgr)
+         case 36: case 46: FGBG(TMT_COLOR_CYAN);             break;
+         case 37: case 47: FGBG(TMT_COLOR_WHITE);            break;
+         case 39: case 49: FGBG(TMT_COLOR_DEFAULT);          break;
++        /* PRAWK_SGR_EXTCOLOR: 38/48 introduce 256-color (";5;N") or
++         * truecolor (";2;R;G;B") sequences. We don't render those, but we
++         * MUST consume their parameters — otherwise R/G/B/N bytes that
++         * happen to land in 30-47 leak into the basic-color cases below
++         * and silently repaint fg/bg (e.g. green tint on Claude output). */
++        case 38: case 48:
++            if (i + 1 < vt->npar && P0(i + 1) == 5)      i += 2;
++            else if (i + 1 < vt->npar && P0(i + 1) == 2) i += 4;
++            else                                          i = vt->npar;
++            break;
+     }
+ }
+ 
+@@ -251,6 +293,9 @@ HANDLER(consumearg)
  HANDLER(fixcursor)
      c->r = MIN(c->r, s->nline - 1);
      c->c = MIN(c->c, s->ncol - 1);
@@ -128,7 +145,7 @@ index 7ace141..a0d003b 100644
  }
  
  static bool
-@@ -258,6 +293,20 @@ handlechar(TMT *vt, char i)
+@@ -258,6 +303,20 @@ handlechar(TMT *vt, char i)
  {
      COMMON_VARS;
  
@@ -149,7 +166,7 @@ index 7ace141..a0d003b 100644
      char cs[] = {i, 0};
      #define ON(S, C, A) if (vt->state == (S) && strchr(C, i)){ A; return true;}
      #define DO(S, C, A) ON(S, C, consumearg(vt); if (!vt->ignored) {A;} \
-@@ -266,7 +315,11 @@ handlechar(TMT *vt, char i)
+@@ -266,7 +325,11 @@ handlechar(TMT *vt, char i)
      DO(S_NUL, "\x07",       CB(vt, TMT_MSG_BELL, NULL))
      DO(S_NUL, "\x08",       if (c->c) c->c--)
      DO(S_NUL, "\x09",       while (++c->c < s->ncol - 1 && t[c->c].c != L'*'))
@@ -162,7 +179,7 @@ index 7ace141..a0d003b 100644
      DO(S_NUL, "\x0d",       c->c = 0)
      ON(S_NUL, "\x1b",       vt->state = S_ESC)
      ON(S_ESC, "\x1b",       vt->state = S_ESC)
-@@ -275,6 +328,10 @@ handlechar(TMT *vt, char i)
+@@ -275,6 +338,10 @@ handlechar(TMT *vt, char i)
      DO(S_ESC, "8",          vt->curs = vt->oldcurs; vt->attrs = vt->oldattrs)
      ON(S_ESC, "+*()",       vt->ignored = true; vt->state = S_ARG)
      DO(S_ESC, "c",          tmt_reset(vt))
@@ -173,7 +190,7 @@ index 7ace141..a0d003b 100644
      ON(S_ESC, "[",          vt->state = S_ARG)
      ON(S_ARG, "\x1b",       vt->state = S_ESC)
      ON(S_ARG, ";",          consumearg(vt))
-@@ -304,12 +361,29 @@ handlechar(TMT *vt, char i)
+@@ -304,12 +371,29 @@ handlechar(TMT *vt, char i)
      DO(S_ARG, "g",          if (P0(0) == 3) clearline(vt, vt->tabs, 0, s->ncol))
      DO(S_ARG, "m",          sgr(vt))
      DO(S_ARG, "n",          if (P0(0) == 6) dsr(vt))
@@ -205,7 +222,7 @@ index 7ace141..a0d003b 100644
  
      return resetparser(vt), false;
  }
-@@ -390,6 +464,12 @@ tmt_resize(TMT *vt, size_t nline, size_t ncol)
+@@ -390,6 +474,12 @@ tmt_resize(TMT *vt, size_t nline, size_t ncol)
      }
      vt->screen.nline = nline;
  
@@ -218,7 +235,7 @@ index 7ace141..a0d003b 100644
      vt->tabs = allocline(vt, vt->tabs, ncol, 0);
      if (!vt->tabs) return free(l), false;
      vt->tabs->chars[0].c = vt->tabs->chars[ncol - 1].c = L'*';
-@@ -413,21 +493,26 @@ writecharatcurs(TMT *vt, wchar_t w)
+@@ -413,21 +503,26 @@ writecharatcurs(TMT *vt, wchar_t w)
      if (wcwidth(w) < 0) return;
      #endif
  
@@ -254,7 +271,7 @@ index 7ace141..a0d003b 100644
  }
  
  static inline size_t
-@@ -498,6 +583,11 @@ tmt_reset(TMT *vt)
+@@ -498,6 +593,11 @@ tmt_reset(TMT *vt)
      vt->curs.r = vt->curs.c = vt->oldcurs.r = vt->oldcurs.c = vt->acs = (bool)0;
      resetparser(vt);
      vt->attrs = vt->oldattrs = defattrs;
