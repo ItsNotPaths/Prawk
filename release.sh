@@ -61,8 +61,23 @@ if [ $DO_LOCAL -eq 1 ]; then
     apply_vendor_patches
 
     BIN="$RELEASE_DIR/$PROJECT_NAME"
+    # Trimming flags layered on top of -d:release/-d:strip/-d:lto:
+    #   -fno-pie / -no-pie       — drops .rela.dyn relocations (~10 KB win)
+    #   -ffunction-sections /
+    #     -fdata-sections /
+    #     -Wl,--gc-sections      — discards unreachable funcs/data
+    #   -fno-asynchronous-unwind-tables /
+    #     -fno-unwind-tables     — drops .eh_frame (we don't unwind C++)
+    #   -Wl,--build-id=none      — drops the build-id note
+    #   -Wl,-z,norelro / -z,now  — minor; relro section trim
     ( cd "$PROJECT_DIR" && \
       nim c --opt:size -d:release -d:strip -d:lto \
+            --passC:-fno-pie --passL:-no-pie \
+            --passC:-ffunction-sections --passC:-fdata-sections \
+            --passC:-fno-asynchronous-unwind-tables \
+            --passC:-fno-unwind-tables \
+            --passL:-Wl,--gc-sections \
+            --passL:-Wl,--build-id=none \
             --out:"$BIN" src/prawk.nim )
 
     [ -f "$PROJECT_DIR/README.md" ]    && cp -f "$PROJECT_DIR/README.md"    "$RELEASE_DIR/" || true
