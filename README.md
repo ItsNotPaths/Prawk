@@ -1,4 +1,6 @@
-# prawk
+<p align="center">
+  <img src="assets/prawk-logo.svg" alt="prawk" width="220">
+</p>
 
 A tiny X11 dev environment using nakst/luigi.c: file tree, tabbed editor with syntax highlighting, N
 embedded terminals, a git pane, and a master command-line. Linux x86_64. ~250 KB
