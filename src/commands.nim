@@ -13,6 +13,7 @@ var
   registry*: seq[Command]
   openPaletteWithCb*: proc(text: string) {.closure.}
   clDispatchCb*: proc(line: string) {.closure.}
+  clShellCwdCb*: proc(): string {.closure.}
 
 proc registerCommand*(name: string, p: CmdProc) =
   for i in 0 ..< registry.len:
@@ -28,17 +29,25 @@ proc runCommand*(name: string, args: seq[string] = @[]): bool =
       return true
   return false
 
-proc cmdProjectLoad(args: seq[string]) =
-  if args.len < 1: return
-  let path = absolutePath(args[0])
-  if dirExists(path):
-    project.setProjectRoot(path)
-
-proc cmdProjectParent(args: seq[string]) =
-  if project.projectRoot.len == 0: return
-  let parent = parentDir(project.projectRoot)
-  if parent.len > 0 and parent != project.projectRoot:
-    project.setProjectRoot(parent)
+proc cmdTerminalUpdate(args: seq[string]) =
+  ## Broadcasts a target dir to unlocked terminals + tree + git pane by
+  ## calling project.setProjectRoot (which fires the registered handlers).
+  ## With a path arg: targets that path. Without: reads the master CL
+  ## shell's actual cwd via /proc/<pid>/cwd, so the user can `cd ../foo`
+  ## in CL and then `:tu` to sync everything else.
+  var target = ""
+  if args.len >= 1:
+    target = args[0]
+    if not isAbsolute(target):
+      let base = if project.projectRoot.len > 0: project.projectRoot
+                 else: getCurrentDir()
+      target = base / target
+    try: target = absolutePath(target).normalizedPath
+    except OSError, ValueError: return
+  elif clShellCwdCb != nil:
+    target = clShellCwdCb()
+  if target.len == 0 or not dirExists(target): return
+  project.setProjectRoot(target)
 
 proc cmdEditorSave(args: seq[string]) =
   if editor.theEditor != nil:
@@ -201,8 +210,8 @@ proc cmdMinimap(args: seq[string]) =
   config.setConfigKey("minimap", if on: "on" else: "off")
 
 proc registerBuiltins*() =
-  registerCommand("project.load", cmdProjectLoad)
-  registerCommand("project.parent", cmdProjectParent)
+  registerCommand("terminal.update", cmdTerminalUpdate)
+  registerCommand("tu", cmdTerminalUpdate)
   registerCommand("editor.save", cmdEditorSave)
   registerCommand("editor.open", cmdEditorOpen)
   registerCommand("editor.open.force", cmdEditorOpenForce)

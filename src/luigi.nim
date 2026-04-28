@@ -149,6 +149,7 @@ type
     e*: Element
   SplitPane* {.bycopy, importc: "UISplitPane", lH.} = object
     e*: Element
+    weight*: cfloat
   Label*     {.bycopy, importc: "UILabel",     lH.} = object
     e*: Element
   Menu*      {.bycopy, importc: "UIMenu",      lH.} = object

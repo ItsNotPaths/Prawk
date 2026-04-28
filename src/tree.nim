@@ -100,7 +100,7 @@ proc treeOnContext(s: pointer, i: int) {.nimcall.} =
   let tr = cast[ptr FolderTree](s)
   if i < 0 or i >= tr.nodes.len: return
   if not tr.nodes[i].isDir: return
-  openPaletteWith("project.load " & tr.nodes[i].path)
+  openPaletteWith("tu " & tr.nodes[i].path)
 
 proc treeOnKey(s: pointer, code: cint, ctrl, shift: bool): bool {.nimcall.} =
   let tr = cast[ptr FolderTree](s)
@@ -111,7 +111,7 @@ proc treeOnKey(s: pointer, code: cint, ctrl, shift: bool): bool {.nimcall.} =
 
   if shift and code == int(KEYCODE_ENTER):
     if sel >= 0 and sel < n and tr.nodes[sel].isDir:
-      openPaletteWith("project.load " & tr.nodes[sel].path)
+      openPaletteWith("tu " & tr.nodes[sel].path)
     return true
 
   if ctrl and code == int(KEYCODE_LETTER('N')):

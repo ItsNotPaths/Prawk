@@ -6,6 +6,7 @@ type Palette* = object
   borderLight*, borderDark*, separator*: uint32
   codeKeyword*, codeString*, codeComment*, codeNumber*, codeOperator*: uint32
   codeType*, codeReturnType*: uint32
+  clInject*: uint32
 
 var currentPalette*: Palette
 
@@ -27,6 +28,7 @@ const gruvboxMaterialDark* = Palette(
   codeOperator:   0xe78a4e'u32,
   codeType:       0xa9b665'u32,
   codeReturnType: 0x89b482'u32,
+  clInject:       0xff0000'u32,
 )
 
 var
@@ -76,6 +78,7 @@ proc parsePalette*(content: string, p: var Palette): bool =
     of "code_operator": p.codeOperator = val
     of "code_type":     p.codeType = val
     of "code_return_type": p.codeReturnType = val
+    of "cl_inject":     p.clInject = val
     else: discard
   return true
 

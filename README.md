@@ -44,17 +44,27 @@ Config (optional): `~/.config/prawk/config` — see [Config](#config) below.
 | `Alt+F` / `Alt+E` / `Alt+V` | Open File / Edit / View menu |
 | `Alt+W` | Inject `:jump ` into the CL |
 | `Esc` | Close CL, restore prior focus |
-| `Enter` | Dispatch (registered command → bare `cd <dir>` → shell) |
+| `Enter` | Dispatch (registered command → `tN` / `t` prefix → shell) |
 
-The CL is a real shell pinned to the project root (its own headless PTY). Bare
-`cd <path>` reloads the project; `cd foo && cmd` and other chains run as shell.
-Output flowing through it is parsed for `path:line[:col]:text` hits and shown in
-a `grep` results pane.
+The CL is a real shell with its own headless PTY. `cd` is plain shell behavior
+— it changes the CL shell's cwd and nothing else. To broadcast that location to
+the rest of the IDE (tree, git pane, unlocked terminals), run `:terminal.update`
+(alias `:tu`); with no arg it reads the CL's actual cwd via `/proc/<pid>/cwd`,
+with a path arg it targets that path. Output flowing through the CL is parsed
+for `path:line[:col]:text` hits and shown in a `grep` results pane.
 
-**Escape hatch**: prefix any line with `t ` to skip every hijack (registered
-commands, `cd` intercept, `ls`→files, etc.) and pipe the rest straight to the
-shell. E.g. `t ls` lists the cwd literally instead of swapping to the file
-provider.
+**When something is injected into the CL** (e.g. tree right-click, projects
+recents, dirty-tab close prompt, `Alt+W` jump), the palette gets a red outline
+(theme key `cl_inject`) — visual cue that the buffer wasn't typed by you. The
+outline clears on the first keystroke or when you Esc/Enter.
+
+**Prefixes**:
+- `t <cmd>` — skip every hijack (registered commands, `ls`→files, etc.) and
+  pipe the rest straight to the CL shell. E.g. `t ls` lists the cwd literally
+  instead of swapping to the file provider.
+- `tN <cmd>` — route `<cmd>` to terminal N (1-based) in the right-stack
+  instead of the CL shell. E.g. `t1 ls` runs `ls` inside terminal 1; `t2 vim
+  foo.nim` opens vim inside terminal 2. Focuses that terminal afterwards.
 
 ### Editor
 | Key | Action |
@@ -82,7 +92,7 @@ provider.
 | `j` / `k` / `Up` / `Down` | Move selection |
 | `Enter` | Activate (open file, expand/collapse dir, swap provider) |
 | `Right` / `Left` | Expand / collapse dir |
-| `Shift+Enter` / right-click on dir | Inject `:project.load <path>` into the CL |
+| `Shift+Enter` / right-click on dir | Inject `:tu <path>` into the CL |
 | `Esc` | Pop back to previous provider (e.g. shell results → tree) |
 
 ### Git pane
@@ -106,7 +116,8 @@ provider.
 | `:jump <N>` / `:j <N>` / `:j +N` / `:j -N` | Jump to absolute / relative line |
 | `:theme <name>` | Switch theme (`default`, `zenburn`) |
 | `:minimap` | Toggle minimap |
-| `:project.load <path>` / `:project.parent` | Change project root |
+| `:reader [on\|off]` | Toggle reader mode (hide terminal column) |
+| `:terminal.update [path]` / `:tu [path]` | Broadcast a target dir to tree, git pane, and unlocked terminals. Bare form uses the CL's current cwd. |
 | `:editor.open <path>` / `:editor.save` | Open / save |
 | `:tab.next` / `:tab.prev` / `:tab.close` | Tab management |
 | `:term.new [name]` / `:term.kill <n>` / `:term.name <n> <name>` | Terminal stack ops |

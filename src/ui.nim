@@ -1,3 +1,4 @@
+import std/strutils
 import luigi
 import term, pump, editor, editortabs, menubar, tree, providers, config, resultspane, terminalstack, clshell, project, commands, minimap, gitpane
 export luigi, editor, menubar
@@ -9,6 +10,9 @@ var
   tabPaneEl: ptr Element
   termHostEl: ptr Element
   termStackRef: ptr TerminalStack
+  innerSplitRef: ptr SplitPane
+  readerMode: bool = false
+  savedInnerSplitWeight: cfloat = 0.65
 
 when defined(termDebug):
   proc log(msg: string) =
@@ -74,7 +78,7 @@ proc onWinMsg(element: ptr Element, message: Message, di: cint, dp: pointer): ci
       elif col == 1: focusCol(0)
     elif right:
       if col == 0: focusCol(1)
-      elif col == 1: focusCol(2)
+      elif col == 1 and not readerMode: focusCol(2)
     elif down:
       if col == 2 and termStackRef != nil and termStackRef.terms.len > 1:
         let nextIdx = termStackRef.focusIdx + 1
@@ -105,6 +109,27 @@ proc paletteLockCb(cp: pointer) {.cdecl.} =
   if termStackRef != nil and termStackRef.terms.len > 0:
     prefix.add($(termStackRef.focusIdx + 1))
   openPaletteWith(prefix)
+
+proc setReaderMode(on: bool) =
+  if innerSplitRef == nil or termHostEl == nil: return
+  if on == readerMode: return
+  readerMode = on
+  if on:
+    savedInnerSplitWeight = innerSplitRef.weight
+    innerSplitRef.weight = 1.0
+    termHostEl.flags = termHostEl.flags or ELEMENT_HIDE
+    if editorEl != nil:
+      let win = editorEl.window
+      if win != nil:
+        let f = win.focused
+        if f != nil and isInTermStack(f):
+          focusElement(editorEl)
+  else:
+    innerSplitRef.weight = savedInnerSplitWeight
+    termHostEl.flags = termHostEl.flags and not ELEMENT_HIDE
+  elementRefresh(addr innerSplitRef.e)
+
+proc readerModeOn*(): bool = readerMode
 
 proc altQDispatch(cp: pointer) {.cdecl.} =
   ## Routes Alt+Q by focused column: editor (body or tab strip) → close active
@@ -186,6 +211,17 @@ proc buildUi*(): UiRefs =
   tabPaneEl    = addr result.editorTabs.e
   termHostEl   = addr result.termStack.e
   termStackRef = result.termStack
+  innerSplitRef = result.innerSplit
+
+  registerCommand("reader", proc(args: seq[string]) =
+    let on =
+      if args.len >= 1:
+        case args[0].toLowerAscii
+        of "on", "true", "1", "yes":  true
+        of "off", "false", "0", "no": false
+        else: not readerMode
+      else: not readerMode
+    setReaderMode(on))
 
   result.window.e.messageUser = onWinMsg
   log("ui built: pane=" & $cast[uint](paneEl) &

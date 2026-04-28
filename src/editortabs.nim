@@ -158,7 +158,9 @@ proc tabsMessage(element: ptr Element, message: Message, di: cint, dp: pointer):
         editorTabSwitch(theEditor, (cur + 1) mod n)
       elementRepaint(element, nil)
       return 1
-    if alt: return 1
+    # Let unhandled Alt+* escape to window-level shortcuts (Alt+Q closes the
+    # active tab via altQDispatch, Alt+T cycles terminals, etc).
+    if alt: return 0
     return 0
 
   return 0

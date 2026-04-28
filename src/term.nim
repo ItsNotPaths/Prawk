@@ -107,11 +107,40 @@ proc rowsEqualChars(a: ScrollLine, b: ptr TmtLine, ncol: int): bool =
     if a[c].c != b.chars[c].c: return false
   true
 
+proc rowIsBlank(a: ScrollLine): bool =
+  for ch in a:
+    let c = ch.c
+    if c != cint(' ') and c != cint(0): return false
+  true
+
+proc lineIsBlank(b: ptr TmtLine, ncol: int): bool =
+  for c in 0 ..< ncol:
+    let ch = b.chars[c].c
+    if ch != cint(' ') and ch != cint(0): return false
+  true
+
+proc rowHasGlyph(a: ScrollLine): bool = not rowIsBlank(a)
+
 proc detectScroll(t: ptr Terminal, old: seq[ScrollLine]) =
-  ## Diff the pre-write grid against the post-write grid and push any rows
-  ## that scrolled off the top into history. libtmt has no scroll callback,
-  ## so we infer scroll-by-k by finding the smallest k where new[0..nrow-1-k]
-  ## equals old[k..nrow-1] row-by-row (chars only — attrs may shift).
+  ## Diff pre-write grid vs post-write grid and push rows that genuinely
+  ## scrolled off the top into history. libtmt has no scroll callback so
+  ## we infer it; this is a heuristic that intentionally errs toward NOT
+  ## capturing — TUIs (claude code, vim, htop) repaint the whole screen
+  ## per keystroke, and false positives pollute scrollback with bits of
+  ## the live UI (input bar, status line) "above" real history.
+  ##
+  ## A real terminal scroll-by-k satisfies all of:
+  ##   1) old[k..nrow-1] matches new[0..nrow-1-k] **counting blanks as
+  ##      mismatches when neither side is blank** (blank-vs-blank is too
+  ##      cheap a match — a TUI repaint with mostly-empty rows would
+  ##      otherwise pick a small k off pure coincidence).
+  ##   2) at least one of the matched rows contains a non-blank char
+  ##      (otherwise we're matching empty space against empty space).
+  ##   3) the freshly-revealed bottom rows (new[nrow-k..nrow-1]) carry
+  ##      content. If they're all blank, the screen just got cleared —
+  ##      not a scroll.
+  ##   4) the rows we'd push (old[0..k-1]) carry content. Blank rows in
+  ##      history are noise; we drop them rather than capture them.
   if t.vt == nil or old.len == 0: return
   let scr = tmt_screen(t.vt)
   let nrow = int(scr.nline)
@@ -120,16 +149,39 @@ proc detectScroll(t: ptr Terminal, old: seq[ScrollLine]) =
   # No-op write: top row unchanged → no scroll.
   if rowsEqualChars(old[0], scr.lines[0], ncol): return
   var k = 0
+  var bestMatchedGlyphs = 0
   for tryK in 1 ..< nrow:
     var ok = true
+    var matchedGlyphs = 0
     for i in 0 ..< (nrow - tryK):
+      let oldRowBlank = rowIsBlank(old[i + tryK])
+      let newRowBlank = lineIsBlank(scr.lines[i], ncol)
+      if oldRowBlank and newRowBlank:
+        # Both blank — accept but don't count as evidence. Pure-blank
+        # bands match accidentally between independent screen states.
+        continue
+      if oldRowBlank != newRowBlank:
+        ok = false; break
       if not rowsEqualChars(old[i + tryK], scr.lines[i], ncol):
         ok = false; break
-    if ok:
-      k = tryK; break
-  if k == 0: return
+      inc matchedGlyphs
+    if ok and matchedGlyphs > 0:
+      k = tryK
+      bestMatchedGlyphs = matchedGlyphs
+      break
+  if k == 0 or bestMatchedGlyphs == 0: return
+  # Bottom k rows must carry content for it to be a real scroll. A
+  # full-screen clear would otherwise look like a scroll-by-everything.
+  var bottomHasContent = false
+  for i in (nrow - k) ..< nrow:
+    if not lineIsBlank(scr.lines[i], ncol):
+      bottomHasContent = true; break
+  if not bottomHasContent: return
+  # Push only non-blank rows. Blank rows in history are visual noise that
+  # makes pageup feel like "ton of empty injected lines".
   for i in 0 ..< k:
-    t.history.add(old[i])
+    if rowHasGlyph(old[i]):
+      t.history.add(old[i])
   if t.history.len > scrollbackMax + scrollbackOver:
     let dropN = t.history.len - scrollbackMax
     t.history = t.history[dropN .. ^1]

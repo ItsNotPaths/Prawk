@@ -22,6 +22,7 @@ type
     palCursor: int     # byte index into palBuf (0..palBuf.len)
     palAnchor: int     # selection anchor; meaningful when hasPalSel
     hasPalSel: bool
+    palInjected: bool  # text was injected (red outline until user touches it)
     menuOpen: bool
     history: seq[string]
     histIdx: int       # -1 = at live buffer; else index into history
@@ -113,10 +114,9 @@ proc mkOption(label: string, cmd: string = "", args: seq[string] = @[]): MenuOpt
 
 proc rebuildFileOptions(mb: ptr Menubar) =
   mb.items[0].options = @[
-    mkOption("Load Parent As Project", "project.parent"),
-    mkOption("Save",                   "editor.save"),
+    mkOption("Save",     "editor.save"),
     mkOption("Save As..."),
-    mkOption("Quit",                   "quit"),
+    mkOption("Quit",     "quit"),
   ]
   let recents = config.readRecents("recents.files")
   if recents.len > 0:
@@ -126,7 +126,8 @@ proc rebuildFileOptions(mb: ptr Menubar) =
 
 proc rebuildViewOptions(mb: ptr Menubar) =
   mb.items[2].options = @[
-    mkOption("Toggle Fullscreen", "window.fullscreen"),
+    mkOption("Toggle Fullscreen",  "window.fullscreen"),
+    mkOption("Toggle Reader Mode", "reader"),
     mkOption("--- Themes ---"),
   ]
   for n in theme.themeNames():
@@ -174,6 +175,7 @@ proc resetPalState(mb: ptr Menubar) =
   mb.palCursor = 0
   mb.palAnchor = 0
   mb.hasPalSel = false
+  mb.palInjected = false
   mb.histIdx = -1
   mb.histDraft = ""
 
@@ -334,6 +336,11 @@ proc menubarMessage(element: ptr Element, message: Message, di: cint, dp: pointe
       drawInvert(painter, Rectangle(
         l: cx, r: cx + gW,
         t: element.bounds.t + padY, b: element.bounds.b - padY))
+      # Injected text — flag the user that the buffer wasn't typed by them.
+      # Cleared on any keystroke so editing or confirming removes the warning.
+      if mb.palInjected:
+        drawBorder(painter, element.bounds, currentPalette.clInject,
+                   Rectangle(l: 2, r: 2, t: 2, b: 2))
       return 1
     drawBlock(painter, element.bounds, ui.theme.panel2)
     var x: cint = element.bounds.l
@@ -379,6 +386,9 @@ proc menubarMessage(element: ptr Element, message: Message, di: cint, dp: pointe
     let win = element.window
     let ctrl  = (win != nil and win.ctrl)
     let shift = (win != nil and win.shift)
+    # Any keystroke means the user is engaging with the injected text;
+    # clear the warning border. (Esc / Enter clear via resetPalState.)
+    mb.palInjected = false
 
     let preCursor = mb.palCursor
 
@@ -524,6 +534,7 @@ proc openPaletteWith*(text: string) =
   enterPalette(theMenubar)
   theMenubar.palBuf = text
   theMenubar.palCursor = text.len
+  theMenubar.palInjected = true
   elementRepaint(addr theMenubar.e, nil)
 
 proc menubarCreate*(parent: ptr Element, flags: uint32 = 0): ptr Menubar =

@@ -47,7 +47,7 @@ proc recentsProvider*(): Provider =
 proc projectsOnSelect(s: pointer, i: int) {.nimcall.} =
   let st = cast[ptr PathList](s)
   if i < 0 or i >= st.list.len: return
-  discard runCommand("project.load", @[st.list[i]])
+  discard runCommand("terminal.update", @[st.list[i]])
 
 proc projectsProvider*(): Provider =
   Provider(

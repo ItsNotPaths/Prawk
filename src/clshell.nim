@@ -1,6 +1,6 @@
 import std/[os, strutils]
 import posix, posix/termios
-import luigi, commands, resultspane, project, pty, config
+import luigi, commands, resultspane, project, pty, config, term, terminalstack
 
 proc atexit(p: proc() {.cdecl.}): cint {.importc, header: "<stdlib.h>", discardable.}
 proc clock_gettime(clkId: cint, tp: ptr Timespec): cint
@@ -72,6 +72,15 @@ proc clShellWrite*(line: string) =
 proc onProjectChange() =
   if theClShell.fd >= 0 and project.projectRoot.len > 0:
     clShellWrite("cd " & quoteShell(project.projectRoot))
+
+proc clShellCurrentCwd*(): string =
+  ## Reads the dedicated CL shell's actual cwd via /proc/<pid>/cwd. Used by
+  ## :terminal.update to broadcast wherever the user has cd'd.
+  if theClShell.pid <= 0: return ""
+  try:
+    return expandSymlink("/proc/" & $cint(theClShell.pid) & "/cwd")
+  except OSError, IOError:
+    return ""
 
 proc shutdown() {.cdecl.} =
   if theClShell.pid > 0:
@@ -472,32 +481,6 @@ proc clShellDrain*() =
 
 # ---------- dispatch ----------
 
-proc hasShellChain(line: string): bool =
-  ## True if the line contains tokens that mean "this isn't a bare cd".
-  ## We don't tokenize properly — quoting/escaping inside strings is fine
-  ## to false-positive on (we just fall through to the shell, which is
-  ## the correct behavior for those edge cases).
-  if line.contains("&&") or line.contains("||"): return true
-  for c in line:
-    if c in {';', '|', '`'}: return true
-  if line.contains("$("): return true
-  false
-
-proc resolveCdTarget(arg: string): string =
-  ## Returns absolute path or "" if not resolvable to an existing directory.
-  var p = arg
-  if p == "~":
-    p = getHomeDir()
-  elif p.startsWith("~/"):
-    p = getHomeDir() / p[2 .. ^1]
-  if not isAbsolute(p) and project.projectRoot.len > 0:
-    p = project.projectRoot / p
-  try:
-    p = absolutePath(p).normalizedPath
-  except OSError, ValueError:
-    return ""
-  if dirExists(p): p else: ""
-
 proc enterShellMode(cmd: string) =
   ## Set up state for a path-3 shell run, swap the panel to the shell
   ## provider immediately (so the spinner has a destination before output
@@ -517,14 +500,34 @@ proc clDispatch*(line: string) =
   if trimmed.len == 0: return
   clLog("dispatch: '" & trimmed & "' projectRoot=" & project.projectRoot)
   # 0. `t ` prefix — escape hatch. Skip every hijack (registry alias,
-  # cd intercept, ls→files, etc.) and pipe the rest straight to the
-  # dedicated shell with live output streaming.
+  # ls→files, etc.) and pipe the rest straight to the dedicated shell
+  # with live output streaming.
   if trimmed.len > 2 and trimmed[0] == 't' and trimmed[1] == ' ':
     let body = trimmed[2 .. ^1].strip()
     if body.len == 0: return
     clLog("  -> t-prefix shell: " & body)
     enterShellMode(body)
     return
+  # 0b. `tN ` prefix — route the rest to terminal N (1-based) in the stack.
+  # `t1 ls` runs `ls` inside terminal 1 instead of the CL shell. Skips the
+  # registry / fallthrough so commands like `t2 grep foo` don't get hijacked
+  # by the `:grep` IDE command.
+  if trimmed.len > 1 and trimmed[0] == 't' and trimmed[1] in {'0'..'9'}:
+    var i = 1
+    while i < trimmed.len and trimmed[i] in {'0'..'9'}: inc i
+    if i < trimmed.len and trimmed[i] == ' ':
+      let body = trimmed[i + 1 .. ^1].strip()
+      if body.len == 0: return
+      var tIdx = -1
+      try: tIdx = parseInt(trimmed[1 ..< i]) - 1
+      except ValueError: discard
+      if tIdx >= 0 and theTermStack != nil and tIdx < theTermStack.terms.len:
+        let tm = theTermStack.terms[tIdx]
+        if tm != nil:
+          clLog("  -> t" & $(tIdx + 1) & " shell: " & body)
+          termRunCmd(tm, body)
+          stackFocusAt(theTermStack, tIdx)
+          return
   let parts = trimmed.splitWhitespace()
   let name = parts[0]
   let args = if parts.len > 1: parts[1 .. ^1] else: @[]
@@ -532,16 +535,10 @@ proc clDispatch*(line: string) =
   if runCommand(name, args):
     clLog("  -> registry hit: " & name)
     return
-  # 2. bare `cd <path>` re-anchors the project root
-  if name == "cd" and parts.len == 2 and not hasShellChain(trimmed):
-    let target = resolveCdTarget(parts[1])
-    clLog("  -> cd intercept: target='" & target & "'")
-    if target.len > 0:
-      discard runCommand("project.load", @[target])
-      if theClPane != nil and theClPane.e.window != nil:
-        elementFocus(addr theClPane.e)
-      return
-  # 3. fall through to the dedicated shell — live-stream output.
+  # 2. fall through to the dedicated shell — live-stream output.
+  # cd is not intercepted: it changes the CL shell's cwd like any normal
+  # shell. Use `:terminal.update` (alias `:tu`) to broadcast that location
+  # to unlocked terminals + tree + git pane.
   clLog("  -> shell fallthrough")
   enterShellMode(trimmed)
 
@@ -578,6 +575,7 @@ proc cmdGrep(args: seq[string]) =
 proc clShellInstall*(pane: ptr ResultsPane) =
   theClPane = pane
   commands.clDispatchCb = proc(line: string) = clDispatch(line)
+  commands.clShellCwdCb = proc(): string = clShellCurrentCwd()
   registerCommand("cl", proc(args: seq[string]) = swapTo(clProvider()))
   registerCommand("cl.interrupt", proc(args: seq[string]) = clShellInterrupt())
   registerCommand("grep", cmdGrep)

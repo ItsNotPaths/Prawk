@@ -232,6 +232,7 @@ proc editorOpenFile*(ed: ptr Editor, path: string) =
     if path.len > 0 and not path.startsWith("diff://"):
       config.pushRecent("recents.files", path)
     elementRepaint(addr ed.e, nil)
+    if editorTabsRepaintCb != nil: editorTabsRepaintCb()
     return
   # Replace the empty starter scratch tab in-place if present and unmodified.
   let scratchOnly = ed.tabs.len == 1 and ed.tabs[0].path.len == 0 and
@@ -248,6 +249,7 @@ proc editorOpenFile*(ed: ptr Editor, path: string) =
   if path.len > 0 and not path.startsWith("diff://"):
     config.pushRecent("recents.files", path)
   elementRepaint(addr ed.e, nil)
+  if editorTabsRepaintCb != nil: editorTabsRepaintCb()
 
 proc editorOpenSynthetic*(ed: ptr Editor, synthPath, content: string) =
   ## Opens a non-disk buffer (e.g. a git diff). `synthPath` is used as the
@@ -259,6 +261,7 @@ proc editorOpenSynthetic*(ed: ptr Editor, synthPath, content: string) =
   if existing >= 0:
     ed.activeIdx = existing
     elementRepaint(addr ed.e, nil)
+    if editorTabsRepaintCb != nil: editorTabsRepaintCb()
     return
   proc fillBuf(b: var EditorBuf, p, body: string) =
     b.path = p
@@ -276,6 +279,7 @@ proc editorOpenSynthetic*(ed: ptr Editor, synthPath, content: string) =
   ed.tabs.add(nb)
   ed.activeIdx = ed.tabs.len - 1
   elementRepaint(addr ed.e, nil)
+  if editorTabsRepaintCb != nil: editorTabsRepaintCb()
 
 proc editorIsDirty*(): bool =
   if theEditor == nil: return false
@@ -301,6 +305,10 @@ proc editorCloseTab*(ed: ptr Editor, idx: int) =
     elif idx < ed.activeIdx:
       dec ed.activeIdx
   elementRepaint(addr ed.e, nil)
+  # Tabs strip is a separate widget — needs its own repaint so the closed
+  # label disappears immediately. Without this the strip stays stale until
+  # something else (focus change, hover) triggers it.
+  if editorTabsRepaintCb != nil: editorTabsRepaintCb()
 
 proc editorTabNext*(ed: ptr Editor) =
   if ed == nil or ed.tabs.len <= 1: return
@@ -541,17 +549,20 @@ proc editorTabLabel*(ed: ptr Editor, idx: int): string =
     if b.path.len == 0:
       "[scratch]"
     elif b.path.startsWith("diff://"):
-      # diff://<hash>/<relpath>  →  "Δ <hash> <basename>".
+      # diff://<hash>/<relpath>  →  "~ <hash> <basename>".
+      # ASCII prefix only — the embedded bitmap font has no glyph for
+      # multi-byte UTF-8, so a `Δ` here would render as `??` (each byte
+      # falls back to the missing-glyph `?`).
       let rest = b.path[7 .. ^1]
       let slash = rest.find('/')
       if slash <= 0:
-        "Δ " & rest
+        "~ " & rest
       else:
         let hash = rest[0 ..< slash]
         let rel = rest[slash + 1 .. ^1]
         let base = extractFilename(rel)
         let short = if hash.len > 7: hash[0 ..< 7] else: hash
-        "Δ " & short & " " & base
+        "~ " & short & " " & base
     else:
       extractFilename(b.path)
   if b.dirty: "* " & nm else: nm
