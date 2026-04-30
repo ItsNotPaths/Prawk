@@ -485,21 +485,25 @@ proc clShellDrain*() =
 
 # ---------- dispatch ----------
 
-proc mutatesTree(cmd: string): bool =
-  ## True for shell commands that change the on-disk layout we display.
-  ## Drives a tree refresh when the command finishes. Conservative — only
-  ## the operations the user actually asked us to follow.
+proc shouldRefreshTree(cmd: string): bool =
+  ## True for shell commands whose completion should re-list the tree.
+  ## `cd` so the files pane follows the user's location automatically;
+  ## `mkdir`/`touch` so newly-created entries appear without a manual `ls`.
+  ## Conservative — only the operations the user asked us to follow.
   let head = cmd.strip().splitWhitespace()
   if head.len == 0: return false
-  head[0] in ["mkdir", "touch"]
+  head[0] in ["cd", "mkdir", "touch"]
 
-proc enterShellMode(cmd: string) =
+proc enterShellMode(cmd: string, viaHatch = false) =
   ## Set up state for a path-3 shell run, swap the panel to the shell
   ## provider immediately (so the spinner has a destination before output
   ## arrives), and write the command to the dedicated PTY. Output streams
   ## live into the shell provider via `streamShellLine` from drain.
+  ## `viaHatch` = true when invoked through the `t ` escape — disables
+  ## tree-refresh hijacking so the user can opt out of every prawk-side
+  ## side effect on a per-command basis.
   theClShell.state = crShell
-  theClShell.refreshTreeOnIdle = mutatesTree(cmd)
+  theClShell.refreshTreeOnIdle = (not viaHatch) and shouldRefreshTree(cmd)
   theShellState.label = cmd
   theShellState.lines = @[]
   if theClPane != nil:
@@ -519,7 +523,7 @@ proc clDispatch*(line: string) =
     let body = trimmed[2 .. ^1].strip()
     if body.len == 0: return
     clLog("  -> t-prefix shell: " & body)
-    enterShellMode(body)
+    enterShellMode(body, viaHatch = true)
     return
   # 0b. `tN ` prefix — route the rest to terminal N (1-based) in the stack.
   # `t1 ls` runs `ls` inside terminal 1 instead of the CL shell. Skips the
