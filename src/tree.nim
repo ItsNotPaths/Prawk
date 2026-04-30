@@ -35,6 +35,14 @@ proc rebuildRoot(tr: ptr FolderTree) =
   if project.projectRoot.len > 0:
     tr.nodes = listDir(project.projectRoot, 0)
 
+proc currentRoot(): string =
+  ## CL shell's actual cwd if available, else the last broadcast project
+  ## root. Lets `cd ../foo` in the CL update the tree on the next refresh.
+  if commands.clShellCwdCb != nil:
+    let cwd = commands.clShellCwdCb()
+    if cwd.len > 0 and dirExists(cwd): return cwd
+  return project.projectRoot
+
 proc expandAt(tr: ptr FolderTree, idx: int) =
   if idx < 0 or idx >= tr.nodes.len: return
   if not tr.nodes[idx].isDir or tr.nodes[idx].expanded: return
@@ -142,8 +150,31 @@ proc treeProvider*(): Provider =
     onKey: treeOnKey,
     onBack: nil)
 
+proc treeRefresh*() =
+  ## Re-list the tree from the CL shell's current cwd, preserving any
+  ## still-reachable expanded subdirs by path. Called by `:files`/`:tree`
+  ## (so `ls` picks up new files) and by clshell after mkdir/touch.
+  if theTreePane == nil: return
+  var expandedPaths: seq[string]
+  for n in theTreeState.nodes:
+    if n.isDir and n.expanded: expandedPaths.add(n.path)
+  let root = currentRoot()
+  if root.len == 0: return
+  theTreeState.nodes = listDir(root, 0)
+  var i = 0
+  while i < theTreeState.nodes.len:
+    if theTreeState.nodes[i].isDir and
+       theTreeState.nodes[i].path in expandedPaths:
+      expandAt(addr theTreeState, i)
+    inc i
+  if theTreePane.selected >= theTreeState.nodes.len:
+    theTreePane.selected = max(0, theTreeState.nodes.len - 1)
+  if theTreePane.e.window != nil:
+    elementRepaint(addr theTreePane.e, nil)
+
 proc swapBackToTree(args: seq[string]) =
   if theTreePane == nil: return
+  treeRefresh()
   paneSetProvider(theTreePane, treeProvider())
   if theTreePane.e.window != nil:
     elementFocus(addr theTreePane.e)
@@ -154,6 +185,7 @@ proc treeInstall*(pane: ptr ResultsPane) =
   paneSetProvider(pane, treeProvider())
   registerCommand("files", swapBackToTree)
   registerCommand("tree", swapBackToTree)
+  commands.treeRefreshCb = proc() = treeRefresh()
   project.registerProjectChange(proc() =
     rebuildRoot(addr theTreeState)
     if theTreePane != nil:

@@ -14,6 +14,7 @@ var
   openPaletteWithCb*: proc(text: string) {.closure.}
   clDispatchCb*: proc(line: string) {.closure.}
   clShellCwdCb*: proc(): string {.closure.}
+  treeRefreshCb*: proc() {.closure.}
 
 proc registerCommand*(name: string, p: CmdProc) =
   for i in 0 ..< registry.len:

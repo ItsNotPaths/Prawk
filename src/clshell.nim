@@ -45,6 +45,7 @@ type
     ringHead: int       # index of oldest line in ringBuf
     pendingHits: seq[GrepHit]
     state: ClRun
+    refreshTreeOnIdle: bool
 
 const
   ringCap = 500
@@ -391,6 +392,9 @@ proc onSentinelLine() =
   # commit here — just drop the flags.
   theClShell.pendingHits.setLen(0)
   theClShell.state = crIdle
+  if theClShell.refreshTreeOnIdle:
+    theClShell.refreshTreeOnIdle = false
+    if commands.treeRefreshCb != nil: commands.treeRefreshCb()
 
 # ---------- drain ----------
 
@@ -481,12 +485,21 @@ proc clShellDrain*() =
 
 # ---------- dispatch ----------
 
+proc mutatesTree(cmd: string): bool =
+  ## True for shell commands that change the on-disk layout we display.
+  ## Drives a tree refresh when the command finishes. Conservative — only
+  ## the operations the user actually asked us to follow.
+  let head = cmd.strip().splitWhitespace()
+  if head.len == 0: return false
+  head[0] in ["mkdir", "touch"]
+
 proc enterShellMode(cmd: string) =
   ## Set up state for a path-3 shell run, swap the panel to the shell
   ## provider immediately (so the spinner has a destination before output
   ## arrives), and write the command to the dedicated PTY. Output streams
   ## live into the shell provider via `streamShellLine` from drain.
   theClShell.state = crShell
+  theClShell.refreshTreeOnIdle = mutatesTree(cmd)
   theShellState.label = cmd
   theShellState.lines = @[]
   if theClPane != nil:
