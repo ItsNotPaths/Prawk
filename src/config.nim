@@ -46,7 +46,10 @@ proc loadConfig*() =
     let colon = line.find(':')
     if colon <= 0: continue
     let key = line[0 ..< colon].strip()
-    let val = line[colon+1 .. ^1].strip()
+    var rest = line[colon+1 .. ^1]
+    let hash = rest.find('#')
+    if hash >= 0: rest = rest[0 ..< hash]
+    let val = rest.strip()
     case key
     of "tab_mode":
       case val
