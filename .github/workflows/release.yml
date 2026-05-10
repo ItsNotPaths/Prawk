@@ -30,7 +30,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: vendor
-          key: vendor-linux-${{ hashFiles('download-deps.sh', 'patches/libtmt-prawk.patch') }}
+          key: vendor-linux-${{ hashFiles('download-deps.sh') }}
 
       - name: Download deps
         run: |

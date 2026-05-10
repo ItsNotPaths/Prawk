@@ -1,4 +1,4 @@
 Nim GPLv3 public
 luigi
 luiginim
-libtmt
+libvterm

@@ -1,7 +1,5 @@
 import std/[os, strutils]
 import luigi, project, editor, terminalstack, theme, config, minimap
-when defined(termDebug):
-  import term
 
 type
   CmdProc* = proc (args: seq[string]) {.closure.}
@@ -181,20 +179,6 @@ proc cmdTheme(args: seq[string]) =
     config.setConfigKey("theme", args[0])
     theme.repaintAllWindows()
 
-when defined(termDebug):
-  proc cmdTermDebugDump(args: seq[string]) =
-    ## Snapshot the focused (or args[0]-indexed, 1-based) terminal's libtmt
-    ## grid to /tmp/prawk-term-N.grid. Only registered in -d:termDebug builds.
-    if theTermStack == nil or theTermStack.terms.len == 0: return
-    var idx = theTermStack.focusIdx
-    if args.len >= 1:
-      var s = args[0].strip()
-      if s.len > 0 and s[0] in {'t','T'}: s = s[1 .. ^1]
-      try: idx = parseInt(s) - 1
-      except ValueError: return
-    if idx < 0 or idx >= theTermStack.terms.len: return
-    termDebugDump(theTermStack.terms[idx])
-
 proc cmdMinimap(args: seq[string]) =
   ## `:minimap` toggles. `:minimap on|off` sets explicitly. Persists to config.
   let mm = theMinimap
@@ -235,5 +219,3 @@ proc registerBuiltins*() =
   registerCommand("tab.close", cmdTabClose)
   registerCommand("tab.close.force", cmdTabCloseForce)
   registerCommand("minimap", cmdMinimap)
-  when defined(termDebug):
-    registerCommand("term.debug.dump", cmdTermDebugDump)

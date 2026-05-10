@@ -1,9 +1,12 @@
-import std/[os, strutils]
+import std/[os, strutils, algorithm]
 import luigi, config, font, highlight, clipboard, theme
 
 type
   EditKind = enum
     ekNone, ekInsert, ekBackspace, ekOther
+
+  ExtraCursor* = object
+    row*, col*: int
 
   Snapshot = object
     lines: seq[string]
@@ -25,6 +28,7 @@ type
     spans: seq[Span]              # reused per-paint buffer
     selAnchorRow, selAnchorCol: int
     hasSel: bool
+    extraCursors: seq[ExtraCursor]   # secondary insertion points (Shift+click)
     panning: bool
     panStartX, panStartY: cint
     panStartTopLine, panStartTopCol: int
@@ -181,11 +185,121 @@ proc deleteSelection(ed: ptr Editor) =
 
 proc selAll(ed: ptr Editor) =
   if ed.buf.lines.len == 0: return
+  ed.buf.extraCursors.setLen(0)
   ed.buf.selAnchorRow = 0
   ed.buf.selAnchorCol = 0
   ed.buf.cursorRow = ed.buf.lines.len - 1
   ed.buf.cursorCol = ed.buf.lines[ed.buf.cursorRow].len
   ed.buf.hasSel = true
+
+proc markDirty(ed: ptr Editor)   # forward decl — defined later
+# --- multi-cursor helpers ----------------------------------------------------
+# Extra cursors are pure insertion points (no per-cursor selections). All
+# editing ops apply to primary + extras; undo collapses back to a single
+# cursor. Selection (hasSel) is owned by the primary only.
+
+proc clearExtraCursors*(ed: ptr Editor) =
+  if ed != nil and ed.buf.extraCursors.len > 0:
+    ed.buf.extraCursors.setLen(0)
+
+proc lineColToOffset(lines: seq[string], r, c: int): int =
+  var off = 0
+  let rr = clamp(r, 0, max(0, lines.len - 1))
+  for i in 0 ..< rr: off += lines[i].len + 1
+  off + clamp(c, 0, lines[rr].len)
+
+proc offsetToLineCol(lines: seq[string], off: int): (int, int) =
+  var rem = max(0, off)
+  for i, ln in lines:
+    if rem <= ln.len: return (i, rem)
+    rem -= ln.len + 1
+  let last = max(0, lines.len - 1)
+  (last, if lines.len > 0: lines[last].len else: 0)
+
+proc gatherCursorOffsets(b: EditorBuf): seq[int] =
+  result = newSeq[int](1 + b.extraCursors.len)
+  result[0] = lineColToOffset(b.lines, b.cursorRow, b.cursorCol)
+  for i, ec in b.extraCursors:
+    result[i + 1] = lineColToOffset(b.lines, ec.row, ec.col)
+
+proc dedupeAndScatter(ed: ptr Editor, offs: seq[int]) =
+  ## Write offsets back to primary + extras. Drops duplicates so two cursors
+  ## that end up at the same spot collapse into one.
+  var seen: seq[int] = @[]
+  for o in offs:
+    var dup = false
+    for s in seen:
+      if s == o: dup = true; break
+    if not dup: seen.add(o)
+  if seen.len == 0: seen.add(0)
+  let pri = offsetToLineCol(ed.buf.lines, seen[0])
+  ed.buf.cursorRow = pri[0]
+  ed.buf.cursorCol = pri[1]
+  ed.buf.extraCursors.setLen(0)
+  for i in 1 ..< seen.len:
+    let (r, c) = offsetToLineCol(ed.buf.lines, seen[i])
+    ed.buf.extraCursors.add(ExtraCursor(row: r, col: c))
+
+proc applyMultiEdit(ed: ptr Editor,
+                    perOffset: proc(flat: var string, off: int): int) =
+  ## Apply an edit at every cursor. `perOffset` mutates `flat` at the given
+  ## offset and returns the new offset for that cursor (e.g., off+s.len for an
+  ## insert, off-1 for a backspace). Edits are applied in ascending offset
+  ## order; remaining cursors are shifted by the running delta so each fires
+  ## at the right spot in the now-mutated buffer.
+  let origOffs = gatherCursorOffsets(ed.buf)
+  var indexed = newSeq[(int, int)](origOffs.len)
+  for i, o in origOffs: indexed[i] = (o, i)
+  indexed.sort(proc(a, b: (int, int)): int = a[0] - b[0])
+  var flat = ed.buf.lines.join("\n")
+  var newOffs = newSeq[int](origOffs.len)
+  var delta = 0
+  for (o, oi) in indexed:
+    let realO = o + delta
+    let preLen = flat.len
+    newOffs[oi] = perOffset(flat, realO)
+    delta += flat.len - preLen
+  ed.buf.lines = flat.split('\n')
+  if ed.buf.lines.len == 0: ed.buf.lines.add("")
+  dedupeAndScatter(ed, newOffs)
+  ed.buf.dirtyFromRow = 0
+  ed.buf.lineStartStates.setLen(0)
+
+proc multiInsertText*(ed: ptr Editor, s: string) =
+  if s.len == 0: return
+  if ed.buf.extraCursors.len == 0:
+    # Fast path: single-cursor inline edit, no flat-buffer round-trip.
+    let row = ed.buf.cursorRow
+    let col = ed.buf.cursorCol
+    let line = ed.buf.lines[row]
+    let pieces = s.split('\n')
+    if pieces.len == 1:
+      ed.buf.lines[row] = line.substr(0, col - 1) & s & line.substr(col)
+      ed.buf.cursorCol = col + s.len
+    else:
+      ed.buf.lines[row] = line.substr(0, col - 1) & pieces[0]
+      for i in 1 ..< pieces.len:
+        ed.buf.lines.insert(pieces[i], row + i)
+      ed.buf.lines[row + pieces.high] =
+        ed.buf.lines[row + pieces.high] & line.substr(col)
+      ed.buf.cursorRow = row + pieces.high
+      ed.buf.cursorCol = pieces[^1].len
+    invalidateFrom(ed, row)
+    markDirty(ed)
+    return
+  applyMultiEdit(ed, proc(flat: var string, off: int): int =
+    flat = flat.substr(0, off - 1) & s & flat.substr(off)
+    off + s.len)
+  markDirty(ed)
+
+proc multiBackspace*(ed: ptr Editor) =
+  if ed.buf.extraCursors.len == 0:
+    return  # caller falls back to single-cursor backspace
+  applyMultiEdit(ed, proc(flat: var string, off: int): int =
+    if off <= 0: return 0
+    flat = flat.substr(0, off - 2) & flat.substr(off)
+    off - 1)
+  markDirty(ed)
 
 proc saveAtomic(path, content: string): bool =
   try:
@@ -320,6 +434,18 @@ proc editorTabPrev*(ed: ptr Editor) =
   ed.activeIdx = (ed.activeIdx - 1 + ed.tabs.len) mod ed.tabs.len
   elementRepaint(addr ed.e, nil)
 
+proc editorTabMove*(ed: ptr Editor, dir: int) =
+  ## Move the active tab by `dir` positions (negative = leftward). Wraps.
+  if ed == nil or ed.tabs.len <= 1 or dir == 0: return
+  let n = ed.tabs.len
+  let cur = ed.activeIdx
+  let dst = ((cur + dir) mod n + n) mod n
+  if dst == cur: return
+  swap(ed.tabs[cur], ed.tabs[dst])
+  ed.activeIdx = dst
+  elementRepaint(addr ed.e, nil)
+  if editorTabsRepaintCb != nil: editorTabsRepaintCb()
+
 proc markDirty(ed: ptr Editor) =
   let was = ed.buf.dirty
   ed.buf.dirty = true
@@ -340,6 +466,7 @@ proc applySnapshot(b: var EditorBuf, s: Snapshot) =
   b.selAnchorRow = s.selAnchorRow
   b.selAnchorCol = s.selAnchorCol
   b.hasSel = s.hasSel
+  b.extraCursors.setLen(0)   # snapshots don't carry multi-cursor state
   b.dirtyFromRow = 0   # rehighlight from top after a structural change
   b.lineStartStates.setLen(0)
 
@@ -704,19 +831,22 @@ proc clickToLogical(ed: ptr Editor, winX, winY: cint): tuple[row, col: int] =
   let col = clamp(cellOff + withinSeg, vrow.lo, vrow.hi)
   (vrow.rowIdx, col)
 
-proc cursorVRowIdx(ed: ptr Editor, vrows: seq[VRow]): int =
-  ## Index in vrows of the visual row holding the cursor; -1 if off-screen.
+proc visualRowFor(ed: ptr Editor, vrows: seq[VRow], row, col: int): int =
+  ## Index in vrows of the visual row holding (row, col); -1 if off-screen.
   for i, vr in vrows:
-    if vr.rowIdx != ed.buf.cursorRow: continue
+    if vr.rowIdx != row: continue
     if not ed.buf.wrap:
       return i
-    # Wrap mode: slice contains cursorCol (with the end-of-line edge case
+    # Wrap mode: slice contains col (with the end-of-line edge case
     # — col == lineLen lands on the last segment).
-    if (ed.buf.cursorCol >= vr.lo and ed.buf.cursorCol < vr.hi) or
-       (ed.buf.cursorCol == vr.hi and
-        (i + 1 >= vrows.len or vrows[i + 1].rowIdx != ed.buf.cursorRow)):
+    if (col >= vr.lo and col < vr.hi) or
+       (col == vr.hi and
+        (i + 1 >= vrows.len or vrows[i + 1].rowIdx != row)):
       return i
   -1
+
+proc cursorVRowIdx(ed: ptr Editor, vrows: seq[VRow]): int =
+  visualRowFor(ed, vrows, ed.buf.cursorRow, ed.buf.cursorCol)
 
 proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer): cint {.cdecl.} =
   let ed = cast[ptr Editor](element)
@@ -817,14 +947,14 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
                                 t: mid, b: mid + 1), dim)
     # cursor
     let cVI = cursorVRowIdx(ed, vrows)
+    let mode = ed.buf.mode
+    let focused = (element.window != nil and element.window.focused == element)
     if cVI >= 0:
       let vrow = vrows[cVI]
       let leftX = if ed.buf.wrap: contentBaseLeft else: contentLeft0
       let cellOff = if ed.buf.wrap: vrow.lo else: 0
       let cx = leftX + cint(ed.buf.cursorCol - cellOff) * gW
       let cy = vrow.y
-      let mode = ed.buf.mode
-      let focused = (element.window != nil and element.window.focused == element)
       if mode == cmInsert:
         drawInvert(painter, Rectangle(l: cx, r: cx + gW, t: cy, b: cy + gH))
       else:
@@ -832,6 +962,26 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
           drawBlock(painter,
                     Rectangle(l: cx, r: cx + 2, t: cy, b: cy + gH),
                     ui.theme.text)
+    # extra cursors — same rendering as primary, plus a thin underline so
+    # users can pick out which is the "real" one for selection / saved state.
+    for ec in ed.buf.extraCursors:
+      let evi = visualRowFor(ed, vrows, ec.row, ec.col)
+      if evi < 0: continue
+      let vrow = vrows[evi]
+      let leftX = if ed.buf.wrap: contentBaseLeft else: contentLeft0
+      let cellOff = if ed.buf.wrap: vrow.lo else: 0
+      let cx = leftX + cint(ec.col - cellOff) * gW
+      let cy = vrow.y
+      if mode == cmInsert:
+        drawInvert(painter, Rectangle(l: cx, r: cx + gW, t: cy, b: cy + gH))
+      else:
+        if (not focused) or cursorBlinkOn:
+          drawBlock(painter,
+                    Rectangle(l: cx, r: cx + 2, t: cy, b: cy + gH),
+                    ui.theme.text)
+      drawBlock(painter,
+                Rectangle(l: cx, r: cx + gW, t: cy + gH - 1, b: cy + gH),
+                currentPalette.accent)
     # Gutter painted last so any leftward bleed from horizontal scroll
     # (tokens / selection rects with x < gutterRight) gets covered cleanly.
     # Driven by vrows so wrap continuations get blank gutter slots and the
@@ -861,6 +1011,21 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
     let w = element.window
     if w != nil:
       let (row, col) = clickToLogical(ed, w.cursorX, w.cursorY)
+      if w.shift:
+        # Shift+click adds a non-selection cursor at the click; primary stays.
+        # We also drop any active selection — extras + selection is a weird
+        # state because extras have no selection of their own and the next
+        # edit would otherwise delete only the primary's selection.
+        ed.buf.hasSel = false
+        var dup = (row == ed.buf.cursorRow and col == ed.buf.cursorCol)
+        if not dup:
+          for ec in ed.buf.extraCursors:
+            if ec.row == row and ec.col == col: dup = true; break
+        if not dup:
+          ed.buf.extraCursors.add(ExtraCursor(row: row, col: col))
+        elementRepaint(element, nil)
+        return 1
+      ed.buf.extraCursors.setLen(0)
       ed.buf.cursorRow = row
       ed.buf.cursorCol = col
       clampCursor(ed)
@@ -937,6 +1102,11 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
     let preCol = ed.buf.cursorCol
 
     template motionStart() =
+      # Motion always collapses multi-cursor back to primary; extras are pure
+      # insertion points and don't track their own selections, so any motion
+      # is the cleanest signal to drop them.
+      if ed.buf.extraCursors.len > 0:
+        ed.buf.extraCursors.setLen(0)
       if shift:
         if not ed.buf.hasSel:
           ed.buf.selAnchorRow = preRow
@@ -956,8 +1126,29 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
     template editStart() =
       if ed.buf.hasSel: deleteSelection(ed)
 
-    # Alt and Shift+Alt belong to the IDE (pane navigation, tab cycling,
-    # window shortcuts). The editor never intercepts them.
+    # Esc collapses extra cursors and clears any active selection. If neither
+    # is set we leave it for whatever else might bind Esc upstream.
+    if code == int(KEYCODE_ESCAPE):
+      var changed = false
+      if ed.buf.extraCursors.len > 0:
+        ed.buf.extraCursors.setLen(0); changed = true
+      if ed.buf.hasSel:
+        ed.buf.hasSel = false; changed = true
+      if changed:
+        elementRepaint(element, nil)
+        return 1
+      return 0
+
+    # Alt+Shift+Left/Right/H/L moves the active tab; lets you reorder without
+    # leaving the editor body. Other Alt / Shift+Alt chords belong to the IDE
+    # (pane navigation, tab cycling, window shortcuts).
+    if alt and shift:
+      if code == int(KEYCODE_LEFT) or code == int(KEYCODE_LETTER('H')):
+        editorTabMove(ed, -1)
+        return 1
+      if code == int(KEYCODE_RIGHT) or code == int(KEYCODE_LETTER('L')):
+        editorTabMove(ed, 1)
+        return 1
     if alt: return 0
 
     if code == int(KEYCODE_INSERT):
@@ -1011,10 +1202,13 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
         if txt.len > 0:
           pushUndo(ed, ekOther)
           editStart()
-          let parts = txt.splitLines()
-          for i, line in parts:
-            if i > 0: insertNewline(ed)
-            if line.len > 0: insertText(ed, line)
+          if ed.buf.extraCursors.len == 0:
+            let parts = txt.splitLines()
+            for i, line in parts:
+              if i > 0: insertNewline(ed)
+              if line.len > 0: insertText(ed, line)
+          else:
+            multiInsertText(ed, txt)
           noteEditEnd(ed)
       elif code == int(KEYCODE_LETTER('D')):
         # killToEnd moved off Ctrl+K so K could mirror Up.
@@ -1049,17 +1243,24 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
       motionEnd()
     elif code == int(KEYCODE_ENTER):
       pushUndo(ed, ekOther)
-      editStart(); insertNewline(ed)
+      editStart()
+      if ed.buf.extraCursors.len == 0: insertNewline(ed)
+      else: multiInsertText(ed, "\n")
       noteEditEnd(ed)
     elif code == int(KEYCODE_BACKSPACE):
       if ed.buf.hasSel:
         pushUndo(ed, ekOther); deleteSelection(ed)
-      else:
+      elif ed.buf.extraCursors.len == 0:
         pushUndo(ed, ekBackspace); backspace(ed)
+      else:
+        pushUndo(ed, ekBackspace); multiBackspace(ed)
       noteEditEnd(ed)
     elif code == int(KEYCODE_TAB):
       pushUndo(ed, ekOther)
-      editStart(); insertText(ed, config.indentString())
+      editStart()
+      let ind = config.indentString()
+      if ed.buf.extraCursors.len == 0: insertText(ed, ind)
+      else: multiInsertText(ed, ind)
       noteEditEnd(ed)
     elif k.textBytes > 0:
       let kind = if ed.buf.hasSel: ekOther else: ekInsert
@@ -1067,7 +1268,8 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
       editStart()
       var s = newString(int(k.textBytes))
       copyMem(addr s[0], k.text, int(k.textBytes))
-      insertText(ed, s)
+      if ed.buf.extraCursors.len == 0: insertText(ed, s)
+      else: multiInsertText(ed, s)
       noteEditEnd(ed)
     else:
       return 0

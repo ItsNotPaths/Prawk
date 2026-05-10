@@ -1,7 +1,5 @@
 import std/os
 import ui, theme, font, project, commands, config, highlight
-when defined(termDebug):
-  import termdebug
 
 proc resolveArgv() =
   if paramCount() == 0:
@@ -18,8 +16,6 @@ proc resolveArgv() =
     project.startFile = absolutePath(arg)
 
 initialise()
-when defined(termDebug):
-  dbgInit()
 config.loadConfig()
 theme.activeTheme = config.themePref
 loadInitialTheme()

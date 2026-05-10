@@ -122,7 +122,18 @@ proc tabsMessage(element: ptr Element, message: Message, di: cint, dp: pointer):
     let k = cast[ptr KeyTyped](dp)
     let win = element.window
     let alt = (win != nil and win.alt)
+    let shift = (win != nil and win.shift)
     let code = k.code
+    # Alt+Shift+Left/Right/H/L reorders tabs from inside the strip — runs
+    # before the bare-H/L navigator below so a held Shift switches modes
+    # from "switch to neighbor" to "drag neighbor along".
+    if alt and shift and not t.pinnedFocused:
+      if code == int(KEYCODE_LEFT) or code == int(KEYCODE_LETTER('H')):
+        editorTabMove(theEditor, -1)
+        return 1
+      if code == int(KEYCODE_RIGHT) or code == int(KEYCODE_LETTER('L')):
+        editorTabMove(theEditor, 1)
+        return 1
     # Enter on the focused pinned tab toggles wrap; otherwise Enter (along
     # with Down/Esc/j/k) drops focus back to the editor body.
     if code == int(KEYCODE_ENTER):

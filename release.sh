@@ -37,47 +37,43 @@ if [ $DO_LOCAL -eq 0 ] && [ $DO_PUBLIC -eq 0 ]; then
     exit 1
 fi
 
-apply_vendor_patches() {
-    local vendor="$PROJECT_DIR/vendor"
-    local patch="$PROJECT_DIR/patches/libtmt-prawk.patch"
-    [ -f "$patch" ] || return 0
-    [ -d "$vendor/libtmt" ] || return 0
-    if (cd "$vendor/libtmt" && git apply --check --reverse "$patch" >/dev/null 2>&1); then
-        return 0  # already applied
-    fi
-    if (cd "$vendor/libtmt" && git apply --check "$patch" >/dev/null 2>&1); then
-        echo "==> applying libtmt-prawk patch"
-        (cd "$vendor/libtmt" && git apply "$patch")
-    else
-        echo "error: libtmt-prawk patch neither applies nor is already applied" >&2
-        exit 1
-    fi
-}
-
 if [ $DO_LOCAL -eq 1 ]; then
     echo "==> Local build: $PROJECT_NAME -> $RELEASE_DIR"
     mkdir -p "$RELEASE_DIR"
 
-    apply_vendor_patches
-
     BIN="$RELEASE_DIR/$PROJECT_NAME"
-    # Trimming flags layered on top of -d:release/-d:strip/-d:lto:
+    # Trimming flags layered on top of -d:danger/-d:strip/-d:lto:
+    #   -d:danger                — drops range/bounds/nil/overflow checks (~33 KB).
+    #                              Saves are atomic (saveAtomic, editor.nim) so a
+    #                              silent crash can't corrupt files on disk.
+    #   -d:noSignalHandler       — no nim SIGSEGV/SIGINT handler (~3 KB).
+    #   --threads:off            — no thread runtime; we never createThread.
+    #   --panics:on              — exception machinery → panics; smaller .text.
+    #   --stackTrace:off /
+    #     --lineTrace:off        — drops file:line strings used in tracebacks.
     #   -fno-pie / -no-pie       — drops .rela.dyn relocations (~10 KB win)
     #   -ffunction-sections /
     #     -fdata-sections /
     #     -Wl,--gc-sections      — discards unreachable funcs/data
     #   -fno-asynchronous-unwind-tables /
     #     -fno-unwind-tables     — drops .eh_frame (we don't unwind C++)
+    #   -fno-stack-protector     — no canary; this is a desktop tool, not a
+    #                              network-facing daemon.
     #   -Wl,--build-id=none      — drops the build-id note
-    #   -Wl,-z,norelro / -z,now  — minor; relro section trim
+    #   -Wl,-z,norelro           — minor; relro section trim
     ( cd "$PROJECT_DIR" && \
-      nim c --opt:size -d:release -d:strip -d:lto \
+      nim c --opt:size -d:danger -d:strip -d:lto \
+            -d:noSignalHandler \
+            --threads:off --panics:on \
+            --stackTrace:off --lineTrace:off \
             --passC:-fno-pie --passL:-no-pie \
             --passC:-ffunction-sections --passC:-fdata-sections \
             --passC:-fno-asynchronous-unwind-tables \
             --passC:-fno-unwind-tables \
+            --passC:-fno-stack-protector \
             --passL:-Wl,--gc-sections \
             --passL:-Wl,--build-id=none \
+            --passL:-Wl,-z,norelro \
             --out:"$BIN" src/prawk.nim )
 
     [ -f "$PROJECT_DIR/README.md" ]    && cp -f "$PROJECT_DIR/README.md"    "$RELEASE_DIR/" || true

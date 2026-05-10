@@ -6,7 +6,7 @@ type
     tkDefault, tkKeyword, tkString, tkComment, tkNumber, tkOperator,
     tkProcName, tkTypeName, tkReturnType
 
-  LangKind* = enum lkGeneric, lkNim, lkDiff
+  LangKind* = enum lkGeneric, lkNim, lkDiff, lkMarkdown
 
   Span* = object
     col*, n*: int
@@ -28,12 +28,14 @@ const nimProcKeywords = ["proc", "func", "iterator", "template", "macro",
 template embedSyntax(n: untyped): (string, string) =
   (astToStr(n), staticRead("../syntax/" & astToStr(n) & ".conf"))
 
-const builtinSyntaxes*: array[5, (string, string)] = [
+const builtinSyntaxes*: array[7, (string, string)] = [
   embedSyntax(nim),
   embedSyntax(c),
+  embedSyntax(cpp),
   embedSyntax(python),
   embedSyntax(js),
   embedSyntax(diff),
+  embedSyntax(markdown),
 ]
 
 var
@@ -44,6 +46,7 @@ proc parseRule(name, body: string): SyntaxRule =
   result.name = name
   if name == "nim": result.lang = lkNim
   elif name == "diff": result.lang = lkDiff
+  elif name == "markdown": result.lang = lkMarkdown
   for raw in body.splitLines():
     let line = raw.strip()
     if line.len == 0 or line.startsWith('#'): continue
@@ -107,6 +110,41 @@ proc tokenizeLine*(line: string, rule: ptr SyntaxRule,
     if line.len > 0:
       spans.add(Span(col: 0, n: line.len, kind: tkDefault))
     return 0
+
+  if rule.lang == lkMarkdown:
+    # State: 2 = inside a ``` fenced code block carried over from previous line.
+    # A code-fence line toggles state; while inside, the whole line paints as
+    # tkString. Otherwise: heading lines (#…), blockquotes (>…), and inline
+    # `…` code spans get classified; the rest is default.
+    let inFence = (prevState == 2'u8)
+    let trimmed = line.strip(leading = true, trailing = false)
+    let isFence = trimmed.startsWith("```") or trimmed.startsWith("~~~")
+    if isFence:
+      if line.len > 0:
+        spans.add(Span(col: 0, n: line.len, kind: tkString))
+      return (if inFence: 0'u8 else: 2'u8)
+    if inFence:
+      if line.len > 0:
+        spans.add(Span(col: 0, n: line.len, kind: tkString))
+      return 2'u8
+    if trimmed.startsWith("#"):
+      spans.add(Span(col: 0, n: line.len, kind: tkProcName))
+      return 0'u8
+    if trimmed.startsWith(">"):
+      spans.add(Span(col: 0, n: line.len, kind: tkComment))
+      return 0'u8
+    # Inline backtick code spans.
+    var i = 0
+    while i < line.len:
+      if line[i] == '`':
+        let start = i
+        inc i
+        while i < line.len and line[i] != '`': inc i
+        if i < line.len: inc i   # consume closing backtick
+        spans.add(Span(col: start, n: i - start, kind: tkString))
+      else:
+        inc i
+    return 0'u8
 
   if rule.lang == lkDiff:
     if line.len == 0: return 0

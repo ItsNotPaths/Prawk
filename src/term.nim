@@ -2,41 +2,128 @@ import std/[os, strutils]
 import posix
 import luigi
 import pty, project, font, config, clipboard, theme
-when defined(termDebug):
-  import termdebug
-  export termdebug.ParserState
 
-{.compile: "../vendor/libtmt/tmt.c".}
-{.passC: "-I\"" & (currentSourcePath.parentDir.parentDir / "vendor" / "libtmt") & "\"".}
+{.passC: "-I\"" & (currentSourcePath.parentDir.parentDir / "vendor" / "libvterm" / "include") & "\"".}
+{.compile: "../vendor/libvterm/src/encoding.c".}
+{.compile: "../vendor/libvterm/src/keyboard.c".}
+{.compile: "../vendor/libvterm/src/mouse.c".}
+{.compile: "../vendor/libvterm/src/parser.c".}
+{.compile: "../vendor/libvterm/src/pen.c".}
+{.compile: "../vendor/libvterm/src/screen.c".}
+{.compile: "../vendor/libvterm/src/state.c".}
+{.compile: "../vendor/libvterm/src/unicode.c".}
+{.compile: "../vendor/libvterm/src/vterm.c".}
 
-type
-  TMT* {.importc, incompleteStruct, header: "tmt.h".} = object
-  TmtColor = cint
-  TmtAttrs {.importc: "TMTATTRS", header: "tmt.h", bycopy.} = object
-    bold, dim, underline, blink, reverse, invisible: bool
-    fg, bg: TmtColor
-  TmtChar {.importc: "TMTCHAR", header: "tmt.h", bycopy.} = object
-    c: cint
-    a: TmtAttrs
-  TmtLine {.importc: "TMTLINE", header: "tmt.h", bycopy.} = object
-    dirty: bool
-    chars: UncheckedArray[TmtChar]
-  TmtScreen {.importc: "TMTSCREEN", header: "tmt.h", bycopy.} = object
-    nline, ncol: csize_t
-    lines: ptr UncheckedArray[ptr TmtLine]
-  TmtPoint {.importc: "TMTPOINT", header: "tmt.h", bycopy.} = object
-    r, c: csize_t
-
-proc tmt_open(nline, ncol: csize_t, cb: pointer, p: pointer, acs: ptr cint): ptr TMT {.importc, header: "tmt.h".}
-proc tmt_close(vt: ptr TMT) {.importc, header: "tmt.h".}
-proc tmt_resize(vt: ptr TMT, nline, ncol: csize_t): bool {.importc, header: "tmt.h", discardable.}
-proc tmt_write(vt: ptr TMT, s: cstring, n: csize_t) {.importc, header: "tmt.h".}
-proc tmt_screen(vt: ptr TMT): ptr TmtScreen {.importc, header: "tmt.h".}
-proc tmt_cursor(vt: ptr TMT): ptr TmtPoint {.importc, header: "tmt.h".}
-proc tmt_clean(vt: ptr TMT) {.importc, header: "tmt.h".}
+{.emit: """/*INCLUDESECTION*/
+#include "vterm.h"
+#include <string.h>
+""".}
 
 type
-  ScrollLine = seq[TmtChar]
+  VTerm* {.importc, incompleteStruct, header: "vterm.h".} = object
+  VTermScreen* {.importc, incompleteStruct, header: "vterm.h".} = object
+  VTermState* {.importc, incompleteStruct, header: "vterm.h".} = object
+  VTermPos {.importc: "VTermPos", header: "vterm.h", bycopy.} = object
+    row, col: cint
+
+  VTermScreenCallbacks {.importc: "VTermScreenCallbacks", header: "vterm.h", bycopy.} = object
+    damage, moverect, movecursor, settermprop, bell, resize: pointer
+    sb_pushline, sb_popline, sb_clear, sb_pushline4: pointer
+
+const
+  VTERM_PROP_CURSORVISIBLE = cint(1)
+
+proc vterm_new(rows, cols: cint): ptr VTerm {.importc, header: "vterm.h".}
+proc vterm_free(vt: ptr VTerm) {.importc, header: "vterm.h".}
+proc vterm_set_size(vt: ptr VTerm, rows, cols: cint) {.importc, header: "vterm.h".}
+proc vterm_set_utf8(vt: ptr VTerm, isUtf8: cint) {.importc, header: "vterm.h".}
+proc vterm_input_write(vt: ptr VTerm, bytes: cstring, len: csize_t): csize_t
+  {.importc, header: "vterm.h", discardable.}
+proc vterm_obtain_screen(vt: ptr VTerm): ptr VTermScreen {.importc, header: "vterm.h".}
+proc vterm_obtain_state(vt: ptr VTerm): ptr VTermState {.importc, header: "vterm.h".}
+proc vterm_state_get_cursorpos(state: ptr VTermState, pos: ptr VTermPos)
+  {.importc, header: "vterm.h".}
+proc vterm_screen_set_callbacks(screen: ptr VTermScreen,
+                                cbs: ptr VTermScreenCallbacks, user: pointer)
+  {.importc, header: "vterm.h".}
+proc vterm_screen_reset(screen: ptr VTermScreen, hard: cint) {.importc, header: "vterm.h".}
+proc vterm_screen_enable_altscreen(screen: ptr VTermScreen, alt: cint)
+  {.importc, header: "vterm.h".}
+
+# Flat per-cell snapshot we hand back from C. Avoids dragging libvterm's bitfield
+# attrs and tagged-union VTermColor into Nim's FFI surface — every call into the
+# library to read a cell goes through prawkReadCellAt / prawkReadSbCell, which
+# do the bitfield and color-classification work on the C side.
+#
+# fg_basic / bg_basic: 1..8 when the source colour was indexed 0..7 (basic ANSI),
+# else 0. We keep that path so the prawk theme palette can map the eight named
+# ANSI colours instead of using libvterm's hard-coded RGB defaults; non-basic
+# (16..255 indexed, full RGB, default-fg, default-bg) flows through the RGB
+# fields or the *_default flag.
+type
+  PrawkCell {.bycopy.} = object
+    ch: uint32
+    reverse: uint8
+    fg_default, bg_default: uint8
+    fg_basic, bg_basic: uint8
+    fg_r, fg_g, fg_b: uint8
+    bg_r, bg_g, bg_b: uint8
+
+proc prawkReadCellAt(screen: ptr VTermScreen, row, col: cint, output: ptr PrawkCell) =
+  {.emit: """
+  VTermPos p_; p_.row = `row`; p_.col = `col`;
+  VTermScreenCell c_;
+  memset(`output`, 0, sizeof(*`output`));
+  if (!vterm_screen_get_cell(`screen`, p_, &c_)) return;
+  `output`->ch = c_.chars[0];
+  `output`->reverse = c_.attrs.reverse;
+  if (c_.fg.type & 0x02) { `output`->fg_default = 1; }
+  else if ((c_.fg.type & 0x01) == 0x01 && c_.fg.indexed.idx < 8) {
+    `output`->fg_basic = c_.fg.indexed.idx + 1;
+  } else {
+    VTermColor fgc = c_.fg;
+    vterm_screen_convert_color_to_rgb(`screen`, &fgc);
+    `output`->fg_r = fgc.rgb.red; `output`->fg_g = fgc.rgb.green; `output`->fg_b = fgc.rgb.blue;
+  }
+  if (c_.bg.type & 0x04) { `output`->bg_default = 1; }
+  else if ((c_.bg.type & 0x01) == 0x01 && c_.bg.indexed.idx < 8) {
+    `output`->bg_basic = c_.bg.indexed.idx + 1;
+  } else {
+    VTermColor bgc = c_.bg;
+    vterm_screen_convert_color_to_rgb(`screen`, &bgc);
+    `output`->bg_r = bgc.rgb.red; `output`->bg_g = bgc.rgb.green; `output`->bg_b = bgc.rgb.blue;
+  }
+""".}
+
+proc prawkReadSbCell(screen: ptr VTermScreen, cells: pointer, idx: cint,
+                     output: ptr PrawkCell) =
+  ## Same as prawkReadCellAt but reads from the const VTermScreenCell* row that
+  ## sb_pushline hands us, rather than re-querying the screen.
+  {.emit: """
+  const VTermScreenCell *c_ = ((const VTermScreenCell *)`cells`) + `idx`;
+  memset(`output`, 0, sizeof(*`output`));
+  `output`->ch = c_->chars[0];
+  `output`->reverse = c_->attrs.reverse;
+  if (c_->fg.type & 0x02) { `output`->fg_default = 1; }
+  else if ((c_->fg.type & 0x01) == 0x01 && c_->fg.indexed.idx < 8) {
+    `output`->fg_basic = c_->fg.indexed.idx + 1;
+  } else {
+    VTermColor fgc = c_->fg;
+    vterm_screen_convert_color_to_rgb(`screen`, &fgc);
+    `output`->fg_r = fgc.rgb.red; `output`->fg_g = fgc.rgb.green; `output`->fg_b = fgc.rgb.blue;
+  }
+  if (c_->bg.type & 0x04) { `output`->bg_default = 1; }
+  else if ((c_->bg.type & 0x01) == 0x01 && c_->bg.indexed.idx < 8) {
+    `output`->bg_basic = c_->bg.indexed.idx + 1;
+  } else {
+    VTermColor bgc = c_->bg;
+    vterm_screen_convert_color_to_rgb(`screen`, &bgc);
+    `output`->bg_r = bgc.rgb.red; `output`->bg_g = bgc.rgb.green; `output`->bg_b = bgc.rgb.blue;
+  }
+""".}
+
+type
+  ScrollLine = seq[PrawkCell]
 
   Terminal* = object
     e*: Element
@@ -44,7 +131,10 @@ type
     locked*: bool
     cwd*: string
     rows, cols: int
-    vt: ptr TMT
+    vt: ptr VTerm
+    screen: ptr VTermScreen
+    state: ptr VTermState
+    cbs: VTermScreenCallbacks
     ptyFd*: cint
     pid*: Pid
     readBuf: array[4096, char]
@@ -54,30 +144,50 @@ type
     cursorVisible*: bool
     history: seq[ScrollLine]
     scrollOffset: int  # 0 = live; N = N lines scrolled back into history
-    when defined(termDebug):
-      dbgParser*: ParserState
 
 const
   scrollbackMax = 2000
   scrollbackOver = 256  # trim only when this many over the cap, amortizing the slice
 
-# tmt_msg_t enum values, mirrored from tmt.h.
-const
-  TMT_MSG_CURSOR = cint(4)
-
-proc tmtCallback(m: cint, vt: ptr TMT, a: pointer, p: pointer) {.cdecl.} =
-  let t = cast[ptr Terminal](p)
-  if t == nil: return
-  if m == TMT_MSG_CURSOR and a != nil:
-    let s = cast[cstring](a)
-    t.cursorVisible = (s[0] == 't')
-
 var allTerminals*: seq[ptr Terminal]
 
-proc colorOf(c: TmtColor, fg: bool): uint32 =
-  # libtmt encodes ANSI colors as 1..8 (BLACK..WHITE); 0 / out-of-range = DEFAULT.
+proc cbSettermProp(prop: cint, val: pointer, user: pointer): cint {.cdecl.} =
+  let t = cast[ptr Terminal](user)
+  if t == nil: return 0
+  if prop == VTERM_PROP_CURSORVISIBLE:
+    var b: cint = 0
+    {.emit: "`b` = ((VTermValue *)`val`)->boolean;".}
+    t.cursorVisible = (b != 0)
+  return 1
+
+proc cbSbPushline(cols: cint, cells: pointer, user: pointer): cint {.cdecl.} =
+  ## libvterm fires this once per line that scrolls off the top of the main
+  ## screen.
+  let t = cast[ptr Terminal](user)
+  if t == nil or t.screen == nil: return 0
+  let n = int(cols)
+  var row = newSeq[PrawkCell](n)
+  var blank = true
+  for i in 0 ..< n:
+    prawkReadSbCell(t.screen, cells, cint(i), addr row[i])
+    let ch = row[i].ch
+    if ch != 0 and ch != uint32(' '):
+      blank = false
+  # Skip blank rows — they're visual noise in the pageup view.
+  if not blank:
+    t.history.add(row)
+    if t.history.len > scrollbackMax + scrollbackOver:
+      let dropN = t.history.len - scrollbackMax
+      t.history = t.history[dropN .. ^1]
+    if t.scrollOffset > 0:
+      t.scrollOffset = min(t.history.len, t.scrollOffset + 1)
+  return 1
+
+proc colorOfBasic(idx: uint8, fg: bool): uint32 =
+  ## Map ANSI 0..7 (passed in here as 1..8 to keep the slot 0 → "no basic color"
+  ## flag) onto the prawk theme palette so user themes drive terminal output.
   let p = currentPalette
-  case int(c)
+  case int(idx)
   of 1: p.borderDark    # BLACK
   of 2: p.urgent        # RED
   of 3: p.codeType      # GREEN
@@ -88,108 +198,15 @@ proc colorOf(c: TmtColor, fg: bool): uint32 =
   of 8: p.fg            # WHITE
   else: (if fg: p.fg else: p.bg)
 
-proc captureScreen(t: ptr Terminal): seq[ScrollLine] =
-  if t.vt == nil: return
-  let scr = tmt_screen(t.vt)
-  let nrow = int(scr.nline)
-  let ncol = int(scr.ncol)
-  result = newSeq[ScrollLine](nrow)
-  for r in 0 ..< nrow:
-    let line = scr.lines[r]
-    var row = newSeq[TmtChar](ncol)
-    for c in 0 ..< ncol:
-      row[c] = line.chars[c]
-    result[r] = row
+proc cellFg(c: PrawkCell): uint32 =
+  if c.fg_default != 0: currentPalette.fg
+  elif c.fg_basic != 0: colorOfBasic(c.fg_basic, true)
+  else: (uint32(c.fg_r) shl 16) or (uint32(c.fg_g) shl 8) or uint32(c.fg_b)
 
-proc rowsEqualChars(a: ScrollLine, b: ptr TmtLine, ncol: int): bool =
-  if a.len != ncol: return false
-  for c in 0 ..< ncol:
-    if a[c].c != b.chars[c].c: return false
-  true
-
-proc rowIsBlank(a: ScrollLine): bool =
-  for ch in a:
-    let c = ch.c
-    if c != cint(' ') and c != cint(0): return false
-  true
-
-proc lineIsBlank(b: ptr TmtLine, ncol: int): bool =
-  for c in 0 ..< ncol:
-    let ch = b.chars[c].c
-    if ch != cint(' ') and ch != cint(0): return false
-  true
-
-proc rowHasGlyph(a: ScrollLine): bool = not rowIsBlank(a)
-
-proc detectScroll(t: ptr Terminal, old: seq[ScrollLine]) =
-  ## Diff pre-write grid vs post-write grid and push rows that genuinely
-  ## scrolled off the top into history. libtmt has no scroll callback so
-  ## we infer it; this is a heuristic that intentionally errs toward NOT
-  ## capturing — TUIs (claude code, vim, htop) repaint the whole screen
-  ## per keystroke, and false positives pollute scrollback with bits of
-  ## the live UI (input bar, status line) "above" real history.
-  ##
-  ## A real terminal scroll-by-k satisfies all of:
-  ##   1) old[k..nrow-1] matches new[0..nrow-1-k] **counting blanks as
-  ##      mismatches when neither side is blank** (blank-vs-blank is too
-  ##      cheap a match — a TUI repaint with mostly-empty rows would
-  ##      otherwise pick a small k off pure coincidence).
-  ##   2) at least one of the matched rows contains a non-blank char
-  ##      (otherwise we're matching empty space against empty space).
-  ##   3) the freshly-revealed bottom rows (new[nrow-k..nrow-1]) carry
-  ##      content. If they're all blank, the screen just got cleared —
-  ##      not a scroll.
-  ##   4) the rows we'd push (old[0..k-1]) carry content. Blank rows in
-  ##      history are noise; we drop them rather than capture them.
-  if t.vt == nil or old.len == 0: return
-  let scr = tmt_screen(t.vt)
-  let nrow = int(scr.nline)
-  let ncol = int(scr.ncol)
-  if old.len != nrow: return
-  # No-op write: top row unchanged → no scroll.
-  if rowsEqualChars(old[0], scr.lines[0], ncol): return
-  var k = 0
-  var bestMatchedGlyphs = 0
-  for tryK in 1 ..< nrow:
-    var ok = true
-    var matchedGlyphs = 0
-    for i in 0 ..< (nrow - tryK):
-      let oldRowBlank = rowIsBlank(old[i + tryK])
-      let newRowBlank = lineIsBlank(scr.lines[i], ncol)
-      if oldRowBlank and newRowBlank:
-        # Both blank — accept but don't count as evidence. Pure-blank
-        # bands match accidentally between independent screen states.
-        continue
-      if oldRowBlank != newRowBlank:
-        ok = false; break
-      if not rowsEqualChars(old[i + tryK], scr.lines[i], ncol):
-        ok = false; break
-      inc matchedGlyphs
-    if ok and matchedGlyphs > 0:
-      k = tryK
-      bestMatchedGlyphs = matchedGlyphs
-      break
-  if k == 0 or bestMatchedGlyphs == 0: return
-  # Bottom k rows must carry content for it to be a real scroll. A
-  # full-screen clear would otherwise look like a scroll-by-everything.
-  var bottomHasContent = false
-  for i in (nrow - k) ..< nrow:
-    if not lineIsBlank(scr.lines[i], ncol):
-      bottomHasContent = true; break
-  if not bottomHasContent: return
-  # Push only non-blank rows. Blank rows in history are visual noise that
-  # makes pageup feel like "ton of empty injected lines".
-  for i in 0 ..< k:
-    if rowHasGlyph(old[i]):
-      t.history.add(old[i])
-  if t.history.len > scrollbackMax + scrollbackOver:
-    let dropN = t.history.len - scrollbackMax
-    t.history = t.history[dropN .. ^1]
-  # Live writes always snap the viewport to the bottom; preserve the
-  # invariant that scrolled-back content stays visually anchored by
-  # increasing the offset by k (so the user keeps seeing what they scrolled to).
-  if t.scrollOffset > 0:
-    t.scrollOffset = min(t.history.len, t.scrollOffset + k)
+proc cellBg(c: PrawkCell): uint32 =
+  if c.bg_default != 0: currentPalette.bg
+  elif c.bg_basic != 0: colorOfBasic(c.bg_basic, false)
+  else: (uint32(c.bg_r) shl 16) or (uint32(c.bg_g) shl 8) or uint32(c.bg_b)
 
 proc selOrdered(t: ptr Terminal): tuple[sR, sC, eR, eC: int] =
   let aR = t.selAnchorR; let aC = t.selAnchorC
@@ -208,20 +225,16 @@ proc inSel(t: ptr Terminal, r, c: int): bool =
 
 proc selCopyText(t: ptr Terminal): string =
   if t.vt == nil or not t.hasSel: return ""
-  let scr = tmt_screen(t.vt)
-  let nrow = int(scr.nline)
-  let ncol = int(scr.ncol)
   let (sR, sC, eR, eC) = selOrdered(t)
   var rows: seq[string] = @[]
-  for r in max(0, sR) .. min(nrow - 1, eR):
-    let line = scr.lines[r]
-    let lo =
-      if r == sR: max(0, sC) else: 0
-    let hi =
-      if r == eR: min(ncol, eC) else: ncol
+  var cell: PrawkCell
+  for r in max(0, sR) .. min(t.rows - 1, eR):
+    let lo = if r == sR: max(0, sC) else: 0
+    let hi = if r == eR: min(t.cols, eC) else: t.cols
     var row = ""
     for c in lo ..< hi:
-      var ch = int(line.chars[c].c)
+      prawkReadCellAt(t.screen, cint(r), cint(c), addr cell)
+      var ch = int(cell.ch)
       if ch < 32 or ch > 126: ch = 32
       row.add(char(ch))
     # Trim trailing spaces per row — terminals pad with spaces to ncol.
@@ -270,8 +283,6 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
   if message == msgPaint:
     let painter = cast[ptr Painter](dp)
     if t.vt == nil: return 0
-    let scr = tmt_screen(t.vt)
-    let cur = tmt_cursor(t.vt)
     let (gW, gH) = glyphDims()
     let bx = t.e.bounds.l
     let by = t.e.bounds.t
@@ -280,49 +291,58 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
     let drawCursor = t.cursorVisible and
                      element.window != nil and
                      element.window.focused == element
-    let nrow = int(scr.nline)
-    let ncol = int(scr.ncol)
+    var curPos: VTermPos
+    vterm_state_get_cursorpos(t.state, addr curPos)
+    let nrow = t.rows
+    let ncol = t.cols
     let histLines = min(t.scrollOffset, t.history.len)
+    var liveCell: PrawkCell
     for r in 0 ..< nrow:
       let isHist = r < histLines
       let liveR = r - histLines
       var hLine: ScrollLine
-      var line: ptr TmtLine = nil
       if isHist:
         hLine = t.history[t.history.len - histLines + r]
-      else:
-        line = scr.lines[liveR]
       for col in 0 ..< ncol:
-        let cell =
-          if isHist:
-            (if col < hLine.len: hLine[col] else: TmtChar(c: cint(' ')))
-          else:
-            line.chars[col]
         let x = bx + cint(col) * gW
         let y = by + cint(r) * gH
-        var fg = colorOf(cell.a.fg, true)
-        var bg = colorOf(cell.a.bg, false)
-        if cell.a.reverse: swap(fg, bg)
-        if not isHist and drawCursor and int(cur.r) == liveR and int(cur.c) == col:
+        var fg, bg: uint32
+        var ch: uint32
+        var reverse = false
+        if isHist:
+          if col < hLine.len:
+            let c2 = hLine[col]
+            ch = c2.ch
+            fg = cellFg(c2); bg = cellBg(c2)
+            reverse = c2.reverse != 0
+          else:
+            ch = uint32(' ')
+            fg = currentPalette.fg; bg = currentPalette.bg
+        else:
+          prawkReadCellAt(t.screen, cint(liveR), cint(col), addr liveCell)
+          ch = liveCell.ch
+          fg = cellFg(liveCell); bg = cellBg(liveCell)
+          reverse = liveCell.reverse != 0
+        if reverse: swap(fg, bg)
+        if not isHist and drawCursor and int(curPos.row) == liveR and int(curPos.col) == col:
           swap(fg, bg)
         if not isHist and inSel(t, liveR, col):
           bg = ui.theme.selected
         drawBlock(painter, Rectangle(l: x, r: x + gW, t: y, b: y + gH), bg)
-        let ch = cell.c
-        if ch <= 32 or ch == 0x7F:
+        let cp = int(ch)
+        if cp <= 32 or cp == 0x7F:
           discard  # blank cell
-        elif ch <= 126:
-          buf[0] = char(ch)
+        elif cp <= 126:
+          buf[0] = char(cp)
           drawString(painter,
             Rectangle(l: x, r: x + gW, t: y, b: y + gH),
             cast[cstring](addr buf[0]), 1,
             fg, cint(ALIGN_LEFT), nil)
         else:
-          drawGlyphCp(painter, x, y, ch, fg)
+          drawGlyphCp(painter, x, y, cint(cp), fg)
     if element.window != nil and element.window.focused == element:
       let b = t.e.bounds
       drawBorder(painter, b, currentPalette.accent, Rectangle(l: 2, r: 2, t: 2, b: 2))
-    tmt_clean(t.vt)
     return 1
 
   elif message == msgMouseWheel:
@@ -347,7 +367,7 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
       t.cols = newCols
       t.rows = newRows
       if t.vt != nil:
-        tmt_resize(t.vt, csize_t(t.rows), csize_t(t.cols))
+        vterm_set_size(t.vt, cint(t.rows), cint(t.cols))
       if t.ptyFd >= 0:
         pty.resize(t.ptyFd, t.rows, t.cols)
     return 0
@@ -379,10 +399,11 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
                   code == int(KEYCODE_HOME) or code == int(KEYCODE_END)
     if shift and not ctrl and isArrow:
       if not t.hasSel:
-        # Anchor at the current libtmt cursor (where the user last looked).
+        # Anchor at the current cursor position (where the user last looked).
         if t.vt != nil:
-          let cur = tmt_cursor(t.vt)
-          t.selAnchorR = int(cur.r); t.selAnchorC = int(cur.c)
+          var cur: VTermPos
+          vterm_state_get_cursorpos(t.state, addr cur)
+          t.selAnchorR = int(cur.row); t.selAnchorC = int(cur.col)
           t.selEndR = t.selAnchorR; t.selEndC = t.selAnchorC
         t.hasSel = true
       var nr = t.selEndR
@@ -476,7 +497,7 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
 
   elif message == msgDestroy:
     if t.vt != nil:
-      tmt_close(t.vt); t.vt = nil
+      vterm_free(t.vt); t.vt = nil; t.screen = nil; t.state = nil
     if t.ptyFd >= 0:
       discard close(t.ptyFd); t.ptyFd = -1
     if t.pid > 0:
@@ -497,8 +518,15 @@ proc terminalCreate*(parent: ptr Element, flags: uint32 = 0): ptr Terminal =
   let t = cast[ptr Terminal](e)
   t.rows = 24; t.cols = 80
   t.cursorVisible = true
-  t.vt = tmt_open(csize_t(t.rows), csize_t(t.cols),
-                  cast[pointer](tmtCallback), cast[pointer](t), nil)
+  t.vt = vterm_new(cint(t.rows), cint(t.cols))
+  vterm_set_utf8(t.vt, 1)
+  t.screen = vterm_obtain_screen(t.vt)
+  t.state = vterm_obtain_state(t.vt)
+  vterm_screen_enable_altscreen(t.screen, 1)
+  t.cbs.settermprop = cast[pointer](cbSettermProp)
+  t.cbs.sb_pushline = cast[pointer](cbSbPushline)
+  vterm_screen_set_callbacks(t.screen, addr t.cbs, t)
+  vterm_screen_reset(t.screen, 1)
   let (fd, pid) = startShell(t.rows, t.cols, project.projectRoot,
                              config.terminalTerm)
   t.ptyFd = fd
@@ -508,9 +536,7 @@ proc terminalCreate*(parent: ptr Element, flags: uint32 = 0): ptr Terminal =
 
 proc termWrite*(t: ptr Terminal, s: string) =
   if t == nil or t.vt == nil or s.len == 0: return
-  let snap = captureScreen(t)
-  tmt_write(t.vt, s.cstring, csize_t(s.len))
-  detectScroll(t, snap)
+  discard vterm_input_write(t.vt, s.cstring, csize_t(s.len))
   elementRepaint(addr t.e, nil)
 
 proc termRunCmd*(t: ptr Terminal, line: string) =
@@ -529,39 +555,12 @@ proc termRefreshCwd*(t: ptr Terminal) =
   except OSError, IOError:
     discard
 
-when defined(termDebug):
-  proc terminalIndex*(t: ptr Terminal): int =
-    for i, p in allTerminals:
-      if p == t: return i
-    -1
-
 proc drainAll*() =
   for t in allTerminals:
     if t.ptyFd < 0 or t.vt == nil: continue
     while true:
       let n = read(t.ptyFd, addr t.readBuf[0], t.readBuf.len)
       if n <= 0: break
-      when defined(termDebug):
-        dbgRecordRead(terminalIndex(t), t.dbgParser,
-                      addr t.readBuf[0], n.int)
-      let snap = captureScreen(t)
-      tmt_write(t.vt, cast[cstring](addr t.readBuf[0]), csize_t(n))
-      detectScroll(t, snap)
+      discard vterm_input_write(t.vt, cast[cstring](addr t.readBuf[0]), csize_t(n))
       elementRepaint(addr t.e, nil)
       if n < t.readBuf.len: break
-
-when defined(termDebug):
-  proc termDebugDump*(t: ptr Terminal) =
-    if t == nil or t.vt == nil: return
-    let scr = tmt_screen(t.vt)
-    let cur = tmt_cursor(t.vt)
-    let nrow = int(scr.nline)
-    let ncol = int(scr.ncol)
-    let cellAt = proc(r, c: int): int32 =
-      if r < 0 or r >= nrow or c < 0 or c >= ncol: return 0'i32
-      int32(scr.lines[r].chars[c].c)
-    let reverseAt = proc(r, c: int): bool =
-      if r < 0 or r >= nrow or c < 0 or c >= ncol: return false
-      scr.lines[r].chars[c].a.reverse
-    dbgDumpGrid(terminalIndex(t), nrow, ncol,
-                int(cur.r), int(cur.c), cellAt, reverseAt)

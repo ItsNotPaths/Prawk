@@ -48,30 +48,13 @@ else
     echo "  done."
 fi
 
-echo "==> libtmt"
-if [ -d "$VENDOR/libtmt" ] && [ -n "$(ls -A "$VENDOR/libtmt" 2>/dev/null)" ]; then
-    echo "  already present: libtmt"
+echo "==> libvterm"
+if [ -d "$VENDOR/libvterm" ] && [ -n "$(ls -A "$VENDOR/libvterm" 2>/dev/null)" ]; then
+    echo "  already present: libvterm"
 else
-    echo "  cloning libtmt..."
-    git clone --depth=1 "https://github.com/deadpixi/libtmt.git" "$VENDOR/libtmt"
+    echo "  cloning libvterm..."
+    git clone --depth=1 "https://github.com/neovim/libvterm.git" "$VENDOR/libvterm"
     echo "  done."
-fi
-
-# prawk's libtmt extensions: pending-wrap, DECSTBM scroll regions, OSC absorb,
-# CSI catchall, autowrap (?7), Unicode locale init. Applied to the cloned vendor
-# tree at build time so vendor/ stays clean and others can re-clone freely.
-PATCH="$(cd "$(dirname "$0")" && pwd)/patches/libtmt-prawk.patch"
-if [ -f "$PATCH" ]; then
-    if (cd "$VENDOR/libtmt" && git apply --check --reverse "$PATCH" >/dev/null 2>&1); then
-        echo "==> libtmt-prawk patch already applied"
-    elif (cd "$VENDOR/libtmt" && git apply --check "$PATCH" >/dev/null 2>&1); then
-        echo "==> applying libtmt-prawk patch"
-        (cd "$VENDOR/libtmt" && git apply "$PATCH")
-    else
-        echo "error: libtmt-prawk patch neither applies cleanly nor is already" >&2
-        echo "       applied — vendor/libtmt may be on an unexpected commit." >&2
-        exit 1
-    fi
 fi
 
 echo ""
