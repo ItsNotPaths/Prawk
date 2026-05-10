@@ -330,8 +330,13 @@ proc terminalMessage(element: ptr Element, message: Message, di: cint, dp: point
           bg = ui.theme.selected
         drawBlock(painter, Rectangle(l: x, r: x + gW, t: y, b: y + gH), bg)
         let cp = int(ch)
-        if cp <= 32 or cp == 0x7F:
-          discard  # blank cell
+        # libvterm marks the trailing half of a double-width glyph by writing
+        # 0xFFFFFFFF (== (uint32_t)-1) into chars[0]; the leading cell already
+        # painted the glyph, so treat the gap as blank. Anything above the
+        # Unicode max is also bogus and must be skipped — letting it reach
+        # `cint(cp)` is a RangeDefect (and silent UB under -d:danger).
+        if cp <= 32 or cp == 0x7F or cp > 0x10FFFF:
+          discard  # blank cell / wide-char gap
         elif cp <= 126:
           buf[0] = char(cp)
           drawString(painter,

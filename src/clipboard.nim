@@ -14,6 +14,9 @@ proc clipboardGet*(): string =
   try:
     let p = startProcess("xclip", args = ["-selection", "clipboard", "-o"],
                         options = {poUsePath})
+    # waitForExit reaps but doesn't release the pipe FDs — without close() we
+    # leak per call and eventually EMFILE makes paste/copy silently no-op.
+    defer: p.close()
     result = p.outputStream.readAll()
     discard p.waitForExit()
   except CatchableError:
@@ -23,6 +26,7 @@ proc writeSelection(sel: string, s: string) =
   try:
     let p = startProcess("xclip", args = ["-selection", sel, "-i"],
                         options = {poUsePath})
+    defer: p.close()
     p.inputStream.write(s)
     p.inputStream.close()
     discard p.waitForExit()

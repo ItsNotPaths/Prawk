@@ -28,7 +28,7 @@ type
     spans: seq[Span]              # reused per-paint buffer
     selAnchorRow, selAnchorCol: int
     hasSel: bool
-    extraCursors: seq[ExtraCursor]   # secondary insertion points (Shift+click)
+    extraCursors: seq[ExtraCursor]   # secondary insertion points (Alt+click)
     panning: bool
     panStartX, panStartY: cint
     panStartTopLine, panStartTopCol: int
@@ -428,11 +428,13 @@ proc editorTabNext*(ed: ptr Editor) =
   if ed == nil or ed.tabs.len <= 1: return
   ed.activeIdx = (ed.activeIdx + 1) mod ed.tabs.len
   elementRepaint(addr ed.e, nil)
+  if editorTabsRepaintCb != nil: editorTabsRepaintCb()
 
 proc editorTabPrev*(ed: ptr Editor) =
   if ed == nil or ed.tabs.len <= 1: return
   ed.activeIdx = (ed.activeIdx - 1 + ed.tabs.len) mod ed.tabs.len
   elementRepaint(addr ed.e, nil)
+  if editorTabsRepaintCb != nil: editorTabsRepaintCb()
 
 proc editorTabMove*(ed: ptr Editor, dir: int) =
   ## Move the active tab by `dir` positions (negative = leftward). Wraps.
@@ -1011,18 +1013,28 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
     let w = element.window
     if w != nil:
       let (row, col) = clickToLogical(ed, w.cursorX, w.cursorY)
-      if w.shift:
-        # Shift+click adds a non-selection cursor at the click; primary stays.
+      if w.alt:
+        # Alt+click adds a non-selection cursor at the click; primary stays.
         # We also drop any active selection — extras + selection is a weird
         # state because extras have no selection of their own and the next
         # edit would otherwise delete only the primary's selection.
         ed.buf.hasSel = false
-        var dup = (row == ed.buf.cursorRow and col == ed.buf.cursorCol)
+        # Clamp to line bounds immediately so a click past EOL snaps to the
+        # line end on creation rather than waiting for the first keystroke.
+        if ed.buf.lines.len == 0: ed.buf.lines.add("")
+        var r = row
+        var c = col
+        if r < 0: r = 0
+        if r >= ed.buf.lines.len: r = ed.buf.lines.len - 1
+        let ll = ed.buf.lines[r].len
+        if c < 0: c = 0
+        if c > ll: c = ll
+        var dup = (r == ed.buf.cursorRow and c == ed.buf.cursorCol)
         if not dup:
           for ec in ed.buf.extraCursors:
-            if ec.row == row and ec.col == col: dup = true; break
+            if ec.row == r and ec.col == c: dup = true; break
         if not dup:
-          ed.buf.extraCursors.add(ExtraCursor(row: row, col: col))
+          ed.buf.extraCursors.add(ExtraCursor(row: r, col: c))
         elementRepaint(element, nil)
         return 1
       ed.buf.extraCursors.setLen(0)
@@ -1139,15 +1151,24 @@ proc editorMessage(element: ptr Element, message: Message, di: cint, dp: pointer
         return 1
       return 0
 
-    # Alt+Shift+Left/Right/H/L moves the active tab; lets you reorder without
-    # leaving the editor body. Other Alt / Shift+Alt chords belong to the IDE
-    # (pane navigation, tab cycling, window shortcuts).
-    if alt and shift:
+    # Alt+Shift+Left/Right/H/L cycles the active tab (editor pane swaps to
+    # the new buffer); Alt+Ctrl+Left/Right/H/L reorders the active tab in
+    # place. Lets you both navigate and rearrange without leaving the editor
+    # body. Other Alt / Shift+Alt chords belong to the IDE (pane navigation,
+    # window shortcuts).
+    if alt and ctrl and not shift:
       if code == int(KEYCODE_LEFT) or code == int(KEYCODE_LETTER('H')):
         editorTabMove(ed, -1)
         return 1
       if code == int(KEYCODE_RIGHT) or code == int(KEYCODE_LETTER('L')):
         editorTabMove(ed, 1)
+        return 1
+    if alt and shift:
+      if code == int(KEYCODE_LEFT) or code == int(KEYCODE_LETTER('H')):
+        editorTabPrev(ed)
+        return 1
+      if code == int(KEYCODE_RIGHT) or code == int(KEYCODE_LETTER('L')):
+        editorTabNext(ed)
         return 1
     if alt: return 0
 

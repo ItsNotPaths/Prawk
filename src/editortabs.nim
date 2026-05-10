@@ -123,11 +123,13 @@ proc tabsMessage(element: ptr Element, message: Message, di: cint, dp: pointer):
     let win = element.window
     let alt = (win != nil and win.alt)
     let shift = (win != nil and win.shift)
+    let ctrl = (win != nil and win.ctrl)
     let code = k.code
-    # Alt+Shift+Left/Right/H/L reorders tabs from inside the strip — runs
-    # before the bare-H/L navigator below so a held Shift switches modes
-    # from "switch to neighbor" to "drag neighbor along".
-    if alt and shift and not t.pinnedFocused:
+    # Alt+Ctrl+Left/Right/H/L reorders tabs from inside the strip — runs
+    # before the bare-H/L navigator below so a held Ctrl switches modes
+    # from "switch to neighbor" to "drag neighbor along". Bare arrows (and
+    # Alt+Shift, falling through) cycle selection.
+    if alt and ctrl and not shift and not t.pinnedFocused:
       if code == int(KEYCODE_LEFT) or code == int(KEYCODE_LETTER('H')):
         editorTabMove(theEditor, -1)
         return 1

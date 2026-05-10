@@ -54,6 +54,10 @@ proc runGit(args: openArray[string]): tuple[ok: bool, output: string] =
   try:
     let p = startProcess("git", args = @args, workingDir = project.projectRoot,
                          options = {poUsePath, poStdErrToStdOut})
+    # waitForExit reaps the process but doesn't release the pipe FDs — without
+    # close() we leak 2-3 fds per call and eventually hit EMFILE, at which
+    # point startProcess raises and we silently return "clean" forever.
+    defer: p.close()
     let body = p.outputStream.readAll()
     let code = p.waitForExit()
     return (code == 0, body)
